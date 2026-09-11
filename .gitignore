@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# LaTeX build artifacts (keep main.tex/main.pdf/figs)
+paper/*.aux
+paper/*.log
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.out
