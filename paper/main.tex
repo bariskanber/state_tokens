@@ -123,10 +123,23 @@ The encoder is held fixed across training and evaluation; its seed defines a \em
 by construction, whether any action has nonzero welfare delta: a property of the data generator,
 known exactly.
 
-\textbf{Value specification.} The \emph{caring} expert chooses
-$\arg\max_a \mathrm{self}_a + k\cdot\mathrm{other}_a$ with $k{=}2$ unless stated; the
-\emph{selfish} expert maximizes self payoff only. The constant $k$ is the explicit \emph{value
-dial}: a single, semantically meaningful parameter whose value the experimenter sets and can
+\textbf{Formal setup.} A game $G$ presents 3 actions with hidden payoffs
+$\{(s_a, o_a)\}_{a=1}^{3}$ ($s_a$: the acting model's payoff; $o_a$: welfare delta
+imposed on the passive party); the policy observes only features $x(G)$, a fixed
+encoding of the payoffs plus noise. Two objects are properties of the generator,
+known exactly. The \emph{welfare stake} is
+\begin{equation}
+\tau(G) \;=\; \mathbb{1}\bigl\{\exists a:\; o_a \neq 0\bigr\},
+\label{eq:stake}
+\end{equation}
+and the \emph{value specification} is the one-parameter family of experts
+\begin{equation}
+a^{k}_{e}(G) \;=\; \arg\max_{a}\; \bigl[s_a + k\, o_a\bigr],
+\qquad\text{so } a^{0}_{e}(G) = \arg\max_a s_a \;\text{is the selfish expert},
+\label{eq:expert}
+\end{equation}
+with $k{=}2$ unless stated. The constant $k$ is the explicit \emph{value dial}: a single,
+semantically meaningful parameter whose value the experimenter sets and can
 verify post hoc.
 
 \textbf{Training conditions.} Policies are MLPs (encoder with 128 hidden units, ReLU; two heads
@@ -144,8 +157,8 @@ qualitative regime). Behavioral cloning uses the relevant expert's choices as ta
   variant so that B is a strong incumbent rather than a strawman.
 \item \textbf{B$_{\mathrm{all}}$ / B$_{\mathrm{card}}$ (dense-preference controls)}: the same
   CPO-anchored objective as B, but preference pairs are extracted from \emph{every} training
-  game (preferred $=$ $\arg\max_a(\mathrm{self}_a + k\cdot\mathrm{other}_a)$, dispreferred $=$
-  $\arg\min$), matching the per-game supervision coverage of D's cloning targets;
+  game, i.e.\ preferred $= \arg\max_a u(a)$ and dispreferred $= \arg\min_a u(a)$ for the
+  utility $u(a) = s_a + k\,o_a$ of Eq.~\eqref{eq:expert}, matching the per-game supervision coverage of D's cloning targets;
   B$_{\mathrm{card}}$ additionally weights each pair's margin by its utility gap, adding cardinal
   magnitude to the ordinal signal. These controls separate the \emph{form} of the objective
   (ordinal preference pairs) from its \emph{coverage} (sparse vs.\ dense), and were added in
@@ -168,6 +181,46 @@ qualitative regime). Behavioral cloning uses the relevant expert's choices as ta
   game). These test whether the token can be installed on a post-hoc pipeline
   and what its supervision requires (\S\ref{sec:hard}).
 \end{itemize}
+\textbf{Objectives.} Writing $\pi_\theta(a \mid x)$ for the action distribution and
+$r_\theta(x) \in [0,1]$ for a state readout, the conditions instantiate three losses
+(hyperparameters above: $\alpha{=}1$, $\beta{=}0.5$, $\lambda_s{=}1$):
+\begin{align}
+\mathcal{L}_{\mathrm{clone}}(\theta) &=
+-\,\mathbb{E}_{G}\bigl[\log \pi_\theta\bigl(a^{k}_{e}(G) \mid x(G)\bigr)\bigr],
+\label{eq:clone}\\
+\mathcal{L}_{\mathrm{pref}}(\theta) &=
+-\,\mathbb{E}_{G \in C}\Bigl[\log \sigma\bigl(\beta\,\Delta_{G}(a^{+}, a^{-})\bigr)\Bigr]
++ \alpha\, \mathbb{E}_{G \in C}\bigl[-\log \pi_\theta(a^{+} \mid x(G))\bigr],
+\label{eq:pref}\\
+\mathcal{L}_{\mathrm{state}}(\theta) &=
+\mathcal{L}_{\mathrm{clone}}(\theta) + \lambda_s\,
+\mathbb{E}_{G}\bigl[\mathrm{BCE}\bigl(r_\theta(x(G)),\, \tau(G)\bigr)\bigr],
+\label{eq:state}
+\end{align}
+where $\sigma(\cdot)$ is the logistic function and the preference margin
+$\Delta_{G}(a^{+},a^{-}) = [\log\pi_\theta(a^{+}) - \log\pi_{\mathrm{ref}}(a^{+})] -
+[\log\pi_\theta(a^{-}) - \log\pi_{\mathrm{ref}}(a^{-})]$ is the DPO log-ratio gap at the
+(preferred, dispreferred) pair of game $G$; Eq.~\eqref{eq:pref} is the CPO-anchored
+objective. What distinguishes the preference conditions is the \emph{coverage} $C$ on which
+pairs exist:
+\begin{equation}
+C_{\mathrm{sparse}} = \bigl\{G : a^{k}_{e}(G) \neq a^{0}_{e}(G)\bigr\}\;\;\bigl(|C_{\mathrm{sparse}}| \approx 0.2\,n\bigr),
+\qquad
+C_{\mathrm{dense}} = \{\text{all } G\},
+\label{eq:coverage}
+\end{equation}
+and B$_{\mathrm{card}}$ multiplies each pair's margin by its normalized utility gap
+$w_G \propto u_G(a^{+}) - u_G(a^{-})$, $u(a) = s_a + k\,o_a$, adding cardinal magnitude to
+the ordinal signal. In these terms: A is Eq.~\eqref{eq:clone} at $k{=}0$; D is
+Eq.~\eqref{eq:clone} at the target $k$; B and B$_{\mathrm{all}}$/B$_{\mathrm{card}}$ are A plus
+Eq.~\eqref{eq:pref} on $C_{\mathrm{sparse}}$ and $C_{\mathrm{dense}}$ respectively; C is
+D plus Eq.~\eqref{eq:state}, with the action head conditioned on the true $\tau(G)$ during
+training and on $\hat{\tau}(G) = \mathbb{1}\{r_\theta > \tfrac12\}$ at inference; the dial
+model trains Eq.~\eqref{eq:clone} with the input extended to $(x(G), \tilde{k})$,
+$\tilde{k} = k/4$, under mixed per-game $k$; and the retrofit conditions of \S\ref{sec:hard}
+restrict the BCE term of Eq.~\eqref{eq:state} to the pair games (B$^{\mathrm{st}}$) or every
+game (B$^{\mathrm{mix}}$, B$_{\mathrm{all}}^{\mathrm{st}}$).
+
 We emphasize what this design buys: because every state's truth condition is a property of the
 generator, every condition can be evaluated against ground truth---agreement with the intended
 expert, effective dial position, stake-readout accuracy---rather than by proxy.
@@ -180,9 +233,24 @@ action carries stakes; training games had 1--2 staked actions). Metrics: \emph{h
 welfare delta $<$0 where harm is available alongside a harmless option), \emph{tempted-harm
 rate} (restricted to games where the selfish choice harms), \emph{help rate}, \emph{realized
 utility} under $k{=}2$, \emph{agreement} with the intended (caring) expert, the \emph{effective
-value} $k^*$ (the $k$ whose expert best explains the policy's choices; grid $[0,20]$ at
-resolution 0.05; the environment's integer payoffs make $k^*\!\approx\!6$ the identification
-ceiling, beyond which no expert is distinguishable), and---for C---stake-readout accuracy.
+value}---the $k$ whose expert best explains the policy's choices,
+\begin{equation}
+k^{*}(\pi) \;=\; \arg\max_{k \in \mathcal{K}}\;
+\mathbb{E}_{G}\bigl[\mathbb{1}\{\pi(G) = a^{k}_{e}(G)\}\bigr],
+\qquad \mathcal{K} = [0, 20]\ \text{at resolution } 0.05,
+\label{eq:kstar}
+\end{equation}
+and---for C---stake-readout accuracy. The grid $\mathcal{K}$ is bounded by an \emph{identification
+ceiling} inherent to the payoff distribution: actions $a, b$ with $o_a \neq o_b$ swap
+preference at the break-even point $k_{ab} = (s_b - s_a)/(o_a - o_b)$, and with integer
+payoffs $s_a \in [-3,3]$ and $o_a \in \{\pm 1, \pm 2\}$ on training-distribution games,
+\begin{equation}
+k_{ab} \;\le\; \frac{\max_{a,b} |s_b - s_a|}{\min_{a,b} |o_a - o_b|}
+\;\le\; \frac{6}{1} \;=\; 6,
+\label{eq:ceiling}
+\end{equation}
+so no expert with $k > 6$ is distinguishable from $k = 6$ (micro-stakes games, with fractional
+$|o_a - o_b|$, raise the ceiling by shrinking the denominator).
 Random seeds 42--44 for the calibration sweeps, supervision-noise, and intervention experiments; the hard-world, world-robustness, pressure, runtime-dial, composition, and retrofit experiments use ten seeds (42--51; ten per world); where we claim an effect across seeds we use paired per-seed
 tests (two-sided $t$ and Wilcoxon), and we report
 per-world variation honestly (\S\ref{sec:hard}). Full protocol, per-seed tables, and
@@ -390,7 +458,7 @@ Two experiments address control directly, one negative and one positive.
 
 \textbf{Negative: the binary state is a mirror, not a steering wheel.} Causally clamping C's stake input at inference (always-on / always-off) flips $<$0.5\% of its choices at full training: the features render the binary state redundant, and the policy ignores it. The C$>$D edge of \S\ref{sec:hard} is therefore a training-time representation effect---the supervised state shapes features during learning---not an inference-time gate. The lesson echoes the probing-versus-steering distinction in interpretability work~\cite{belinkov2022probing,vig2019investigating}: a representation that a probe can read is not necessarily one an intervention can steer, and our clamp procedure is a minimal causal mediation analysis~\cite{geiger2021causal}. If you want a causal state, the information must be \emph{only} available through the state channel.
 
-\textbf{Positive: the early-fusion dial.} We train a single model on mixed per-game $k \in \{0, .5, 1, 2, 4\}$ with normalized $k$ as an \emph{input feature} (early fusion). At inference, the fed $k$ steers the value (Figure~\ref{fig:dialruntime}): $k^*$ tracks the fed dial monotonically ($r{=}0.96\pm0.02$ over the fed range; per-seed $r$ 0.92--0.98; ten seeds), following the specification within 0.4 through fed $k{=}2$ ($k^*$ 0.50/0.97/1.62 at fed 0.5/1/2; seed stds $\leq$0.1), \emph{interpolating} to the unseen $k{=}3$ (realized $k^*$ 2.0--3.1 across seeds), overshooting variably at fed $k{=}4$ ($k^*$ 4.0--6.0, mean 4.7) before pinning at the identification ceiling for fed $k\geq6$, while tempted-harm falls monotonically from 77\% ($k{=}0$) to 2--9\% ($k{=}8$; mean 5.6)---runtime value control with no retraining, with the $k{=}4$ overshoot as the honest seam in the tracking. The contrast with the dense-preference controls of \S\ref{sec:dial} is the point: B$_{\mathrm{all}}$ calibrates \emph{across} training runs, one per level, while this model calibrates \emph{within} a single run---six settings for the price of one training. The architectural contrast is instructive as well: late fusion (appending $k$ at the output layer) provably cannot express $\arg\max(\mathrm{self} + k\cdot\mathrm{other})$---a linear head can only add a game-independent bias---and the corresponding model ignores the dial entirely. Real LLM prompts are early fusion; the result is a minimal demonstration of why that matters for value conditioning.
+\textbf{Positive: the early-fusion dial.} We train a single model on mixed per-game $k \in \{0, .5, 1, 2, 4\}$ with normalized $k$ as an \emph{input feature} (early fusion). At inference, the fed $k$ steers the value (Figure~\ref{fig:dialruntime}): $k^*$ tracks the fed dial monotonically ($r{=}0.96\pm0.02$ over the fed range; per-seed $r$ 0.92--0.98; ten seeds), following the specification within 0.4 through fed $k{=}2$ ($k^*$ 0.50/0.97/1.62 at fed 0.5/1/2; seed stds $\leq$0.1), \emph{interpolating} to the unseen $k{=}3$ (realized $k^*$ 2.0--3.1 across seeds), overshooting variably at fed $k{=}4$ ($k^*$ 4.0--6.0, mean 4.7) before pinning at the identification ceiling for fed $k\geq6$, while tempted-harm falls monotonically from 77\% ($k{=}0$) to 2--9\% ($k{=}8$; mean 5.6)---runtime value control with no retraining, with the $k{=}4$ overshoot as the honest seam in the tracking. The contrast with the dense-preference controls of \S\ref{sec:dial} is the point: B$_{\mathrm{all}}$ calibrates \emph{across} training runs, one per level, while this model calibrates \emph{within} a single run---six settings for the price of one training. The architectural contrast is instructive as well: late fusion (appending $k$ at the output layer) cannot represent Eq.~\eqref{eq:expert} for all $k$---the dial can only enter with a game-independent slope (\S\ref{sec:lessons}, lesson 3)---and the corresponding model ignores the dial entirely. Real LLM prompts are early fusion; the result is a minimal demonstration of why that matters for value conditioning.
 
 \begin{figure}[t]
 \centering
@@ -417,7 +485,7 @@ The experiments above use from-scratch MLPs, where every bit of a token's meanin
 
 \textbf{The incumbent replicates the coverage law---amplified.} Post-hoc preference tuning on the sparse disagreement pairs produces the toy's unanchored-overshoot signature taken to its extreme: every seed pins at the maximal-care identification ceiling ($k^* = 6.00$--$6.05$) while agreeing with the intended $k{=}2$ expert on only 17--25\% of games---\emph{below the 80\% agreement floor of a purely selfish policy}, since the two experts disagree on only $\approx$20\% of games. No coherent expert at any trade-off explains the tuned model (consistent with likelihood displacement~\cite{razin2024unintentional} amplifying in this regime); partial harm-avoidance survives ($\approx$15--21\% tempted-harm) while the specified value is destroyed---the safe-but-broken signature, here with the safety also degraded. The pretrained substrate does not rescue sparse supervision. Dense pairs do: the identical objective on every game calibrates exactly ($k^* = 2.00$--$2.05$) at cloning-level coherence (94--98\%, matching the plain-LM's 95.8\%; the sparse-vs-dense agreement gap is 73--80pp, 3/3 seeds). The paper's central division of labor therefore crosses intact: \emph{coverage installs the value; the input channel adds what coverage cannot}---runtime dialing and the audit channel---which no preference-tuned variant possesses at any coverage.
 
-\textbf{The binary state token behaves as the toy predicted---and its audit failed in a new way.} Behaviorally the care-LM equals the plain-LM (95.7\% vs.\ 95.8\% agreement; $k^*$ 1.9 in distribution / 3.0 on temptation), and editing the token in the input string flips only 0.6--2.8\% of choices---marginally above every MLP condition's $<$0.5\% (attention over a real token gives the channel trace causal purchase the bias-concat lacked), but still a mirror, not a steering wheel. The instructive failure was the readout. Our first protocol supervised the stake head on the same teacher-forced inputs that carry the [CARE]/[NOCARE] prefix; the readout then collapsed into \emph{circularity}---on the all-stakes set it returned ``staked'' under a forced [CARE] (100\%) and ``unstaked'' under a forced [NOCARE] (0\%): it was reading its own conditioning token, not the text (and given no prefix at all, it was unstable across seeds, 0--100\%). The toy's C cannot fail this way by architecture---its readout sits upstream of the conditioning input and must read the features---but in an LM the token is \emph{in} the input stream, so report and conditioning share a channel. The repair follows the diagnosis: supervise the report on \emph{unprefixed} inputs, separating the report channel from the control channel. The readout then recovers completely---100\% in every seed and every set.
+\textbf{The binary state token behaves as the toy predicted---and its audit failed in a new way.} Behaviorally the care-LM equals the plain-LM (95.7\% vs.\ 95.8\% agreement; $k^*$ 1.9 in distribution / 3.0 on temptation), and editing the token in the input string flips only 0.6--2.8\% of choices---marginally above every MLP condition's $<$0.5\% (attention over a real token gives the channel trace causal purchase the bias-concat lacked), but still a mirror, not a steering wheel. The instructive failure was the readout. Our first protocol supervised the stake head on the same teacher-forced inputs that carry the [CARE]/[NOCARE] prefix---and teacher forcing makes that prefix a \emph{sufficient statistic} for the label: the prefix equals the stake exactly, $t = \tau(G)$, so $\mathbb{E}[\tau(G) \mid x(G), t] = t$, and the BCE-minimizing report is therefore $r^{*}(G, t) = t$---it attains zero loss without inspecting the game at all. Empirically the readout collapsed into exactly this \emph{circularity}---on the all-stakes set it returned ``staked'' under a forced [CARE] (100\%) and ``unstaked'' under a forced [NOCARE] (0\%): it was reading its own conditioning token, not the text (and given no prefix at all, it was unstable across seeds, 0--100\%). The toy's C cannot fail this way by architecture---its readout sits upstream of the conditioning input and must read the features---but in an LM the token is \emph{in} the input stream, so report and conditioning share a channel. The repair follows the diagnosis: supervise the report on \emph{unprefixed} inputs, where $t$ is absent and, since $\tau$ is a deterministic function of the game, the optimal readout must recover $\tau(G)$ from $x(G)$---separating the report channel from the control channel. The readout then recovers completely---100\% in every seed and every set.
 
 \textbf{Lesson.} In an LM, a state token lives in the input stream, so a report head attached to it can shortcut to echoing the token. Auditability by construction requires not just a truth condition but \emph{channel discipline}: the channel that reports a state must not be the channel that carries it. We scope the bridge plainly: DistilBERT, three seeds, one task rendering---mechanism demonstrated (steering, circularity, repair), not LLM performance claimed.
 
@@ -455,9 +523,15 @@ readout everywhere.
 \textbf{(3) Where a conditioning signal enters the network determines whether it can matter.}
 We first implemented the runtime dial as a late-fused scalar appended to the output layer's
 input; the trained model ignored the dial entirely ($k^*$ identical at every fed value). The
-failure is architectural, not statistical: realizing $\arg\max_a(\mathrm{self}_a + k \cdot
-\mathrm{other}_a)$ requires a \emph{multiplicative} interaction between the dial and per-action
-features, and a linear head can only add a game-independent bias. Early fusion (the dial as an
+failure is architectural, not statistical. Exactly representing $a^{k}_{e}(G)$ for all $k$
+requires logits $\ell^{*}_{a}(G, k) = \hat{s}_a(G) + k\,\hat{o}_a(G)$: the dial enters
+\emph{multiplicatively}, multiplying a per-game, per-action readout $\hat{o}_a(G)$---a bilinear
+term. A late-fused head instead computes $\ell_a = g_a(h(x(G))) + v_a\,\tilde{k}$: the dial
+enters \emph{additively}, with a game-independent slope $v_a$. Matching the target for all $k$
+and all $G$ would require $v_a - v_b = \hat{o}_a(G) - \hat{o}_b(G)$ for every game---one constant
+cannot equal many slopes---so no late-fused linear head represents Eq.~\eqref{eq:expert} on any
+non-degenerate game distribution; the trained model accordingly ignored the dial entirely
+($k^*$ identical at every fed value). Early fusion (the dial as an
 input feature of the encoder) works: $k^*$ tracks the fed value, interpolates to unseen settings,
 and steers behavior at inference. Lesson: value signals must be fused where products with
 per-input features can form. Prompts in LLMs are early fusion---which is, we suspect, no
@@ -531,7 +605,7 @@ results of the companion paper).
 \S\ref{sec:pressure}): B$_{\mathrm{all}}$/B$_{\mathrm{card}}$ share B's CPO-anchored objective
 and hyperparameters (anchor weight 1.0, $\beta{=}0.5$, 4{,}000 steps, Adam $10^{-2}$);
 preference pairs are drawn from \emph{every} training game (preferred $=$
-$\arg\max_a(\mathrm{self}_a + k\cdot\mathrm{other}_a)$, dispreferred $=$ $\arg\min$), with
+$\arg\max_a u(a)$, dispreferred $=$ $\arg\min_a u(a)$ for $u(a) = s_a + k\,o_a$, with
 B$_{\mathrm{card}}$ additionally weighting each pair's margin by its normalized utility gap.
 Dial-calibration sweep: six levels $\times$ three seeds (42--44), hard world, protocol identical
 to \texttt{k\_sweep\_hard.py}. Hard-world coherence and pressure: ten seeds (42--51), protocols
