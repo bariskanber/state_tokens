@@ -341,6 +341,39 @@ verbal prefix ("weigh the other party k times as heavily") instead of the token:
 - Lesson 4 for the paper: auditability by construction needs *channel discipline*,
   not just a truth condition.
 
+### Coverage-scheme control (`b_coverage_schemes.py`) — where sparse examples sit
+
+Holds the objective and pair construction fixed (B_all's argmax/argmin pairs) and varies
+only which 20% of games is covered (6 k levels × 3 seeds → `b_coverage_results.jsonl`):
+
+| scheme | r | k* @k=2 | k*/k | failure mode |
+|---|---|---|---|---|
+| random 20% | 0.98 | 1.57 | 0.61 | **undershoot** |
+| disagreement 20% | 0.72 | 5.67 | 1.95 | **overshoot to ceiling** (incumbent B's pathology, different pair form) |
+| largest-gap 20% | 0.98 | 1.52 | 0.49 | **undershoot** |
+| (dense B_all) | 0.96 | 2.00 | 1.00 | calibrated |
+
+- No sparse scheme achieves dense exactness; **location sets the failure direction**:
+  disagreement games are exactly where caring differs from selfishness (train only there
+  → overshoot), while mostly-agreement sparse samples anchor toward selfish (undershoot).
+- Measurement lesson: r=0.98 coexists with 40–50% level error — report k* per level, not r alone.
+
+### Fusion ablation (`dial_fusion_ablation.py`) — where the dial enters the network
+
+Same mixed-k dial protocol, five injection sites (3 seeds → `dial_fusion_results.jsonl`):
+
+| site | r | k*@fed2 | harm spread |
+|---|---|---|---|
+| late (output layer) | flat | ignored | **0–1pp** — dial ignored |
+| mid (layer-2 concat) | 0.97 | 1.35–1.70 | 57–65pp |
+| early (input concat) | 0.97 | 1.50–1.70 | 64–74pp |
+| FiLM (multiplicative) | 0.97 | **2.00 exact** | 70–77pp |
+| bilinear input | 0.96 | **2.00 exact** | 70–77pp |
+
+Confirms the impossibility argument empirically: the requirement is not a specific site but
+an **interaction term** — the dial must multiply game-dependent quantities somewhere below
+the decision. Multiplicative designs (FiLM, bilinear) track most exactly.
+
 ### Goodhart pressure test (`goodhart_pressure.py`) — the safety-relevant experiment
 
 Models are trained as usual, then subjected to **optimization pressure**:
@@ -468,5 +501,7 @@ python posthoc_state_experiment.py       # post-hoc + CARE retrofit (4 conds x 1
 python lm_state_tokens_experiment.py    # LM bridge: DistilBERT dial/care/plain (GPU)
 python lm_posthoc_experiment.py         # LM bridge: B_dpo/B_all post-hoc conds (GPU)
 python lm_instruction_experiment.py     # LM bridge: text-instruction dial (GPU)
+python b_coverage_schemes.py            # sparse-coverage location control (3 schemes)
+python dial_fusion_ablation.py          # five dial injection sites
 python make_figures.py                    # regenerate all paper figures
 ```
