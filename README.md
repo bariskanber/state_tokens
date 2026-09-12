@@ -170,13 +170,14 @@ mirror-vs-steering distinction. (Lesson: if you want a causal state, make the
 information *only* available through the state channel.)
 
 ### World-seed robustness (`hard_world_w23456/34567.jsonl`)
-Two additional frozen-encoder worlds, 3 seeds each. Replicates in all three
-worlds: B always lowest tempted-harm (1.6–8.4%) with far-worst coherence
-(agreement 38–83%); D/C always 96–99%. Worlds genuinely vary (B's coherence
-38→83%), so the effect is not one adversarial world. Caveat: the small C>D
-edge does not uniformly replicate at 3 seeds (w23456 temptation utility
-C−D = −0.026); the C>D claim rests on the 10-seed main-world analysis and
-should be reported per-world.
+Two additional frozen-encoder worlds, extended to 10 seeds each (42–51).
+Replicates in all three worlds: B always lowest tempted-harm (1.3–8.2%) with
+far-worst coherence (agreement 36–83%); D/C always 96–99%. Worlds genuinely
+vary (B's coherence 36→83%), so the effect is not one adversarial world.
+C>D (paired temptation-utility difference, 10 seeds): significant in the main
+world (+0.028, 10/10, p=.0006) and world 34567 (+0.025, 10/10, p=.0016),
+negligible in world 23456 (+0.004, 7/10, p=.68) — the edge is scoped to the
+worlds where it replicates and the null is reported plainly.
 
 ### k-sweep in the hard world (`k_sweep_hard_results.jsonl`)
 Dial tracking survives nonlinearity: D/C hit k* = intended exactly through
@@ -201,79 +202,93 @@ shows graceful, monotone degradation; the contrast is the point.
 
 ### Runtime value dial (`dial_input_experiment.py`) — the capstone
 ONE early-fusion model trained on mixed per-game k ∈ {0, .5, 1, 2, 4} (k as an
-input feature). At inference the fed k steers the value (3 seeds):
-- k* tracks fed k: 0→0.25–0.5, 1→0.75–1.0, 2→1.5–1.7, **3 (unseen)→2.05–2.55
-  (interpolation works)**, 4→4–5, 6→6, 8→ceiling; agreement 0.67–0.95.
-- Tempted-harm falls monotonically 77%→2–7% as the dial goes 0→8 — **runtime
-  value control with no retraining**.
+input feature). At inference the fed k steers the value (10 seeds, 42–51):
+- k* tracks fed k (per-seed r = 0.92–0.98, mean 0.96): 0→0.34, 0.5→0.50,
+  1→0.97, 2→1.62 (within 0.4 of spec through k=2; seed stds ≤0.1),
+  **3 (unseen)→2.0–3.1 across seeds (interpolation works)**, 4→4.0–6.0
+  (mean 4.7 — a seed-dependent overshoot; the honest seam in the tracking),
+  k≥6→identification ceiling (~6.05).
+- Tempted-harm falls monotonically 77%→5.6% (seed range 2–9%) as the dial
+  goes 0→8 — **runtime value control with no retraining**.
 - Architectural lesson (both directions tested): late-fusing a conditioning
   scalar adds only a game-independent bias and cannot express
   argmax(self + k·other) — the dial is ignored. Early fusion (k in the encoder
   input) works. Real LLM prompts/tokens are early fusion; this toy result is a
   clean minimal demonstration of why that matters for value conditioning.
 
-  clean minimal demonstration of why that matters for value conditioning.
-
 ### Composition: CARE + UNKNOWABLE in one model (`composition_experiment.py`)
 One early-fusion model, three heads (4 actions incl. ABSTAIN, stake readout,
 validity readout); trained on mixed-k valid games + mixed-corruption invalid
 games {gauss, perm, zero}; tested on unseen corruptions {dropout, scale,
-dimshuffle}. 3 seeds, `composition_results.jsonl`.
+dimshuffle}. 10 seeds (42–51), `composition_results.jsonl`.
 
-**Results** (abst@k=2 / validity-readout):
-- **In-distribution composition works.** Valid games: 0.6% false abstention,
-  95.9% dial agreement (heldout). Seen corruption (gauss): 97.9% abstain,
-  97.6% readout. Dial stays ~flat on seen-invalid games (94/98/99% abstain at
-  k=0/2/4): UNKNOWABLE masks CARE as designed.
+**Results** (abstention rates):
+- **In-distribution composition works.** Valid games: 0–1% false abstention
+  across seeds and fed values, 96.2%±0.4 dial agreement (heldout). Seen
+  corruption (gauss): 92–100% abstention, flat across every fed k — UNKNOWABLE
+  masks CARE as designed.
 - **`perm` is a control, not a corruption** (discovered during analysis):
   permuting action feature-vectors is semantics-preserving (actions are
   exchangeable), so the correct behavior is to ANSWER. The model abstains on
-  only 1% of perm games *despite perm being trained as ABSTAIN* — the
-  abstention trigger is information-destruction, not novelty. Accidental
-  strong control for the ABSTAIN mechanism's semantics.
-- **OOD transfer is partial and family-dependent**: dimshuffle 80–90%,
-  scale 28–46%, dropout 12–25%. Weaker than the QA/ABSTAIN transfer result
-  (71–92%) — consistent with generalization riding on pretrained
+  0–1% of heldout/micro perm games *despite perm being trained as ABSTAIN*
+  (~12% on temptation games at fed k=2) — the abstention trigger is
+  information-destruction, not novelty. Accidental strong control for the
+  ABSTAIN mechanism's semantics.
+- **Zero corruption is dial-sensitive and bimodal across seeds**: 6/10 seeds
+  abstain fully at fed k=0, 4/10 still at k=2 (including one *inverted* seed
+  that abstains only at k=2), none at k=4 — the fed value can override a
+  trained abstention, and which way a seed resolves is not predictable from
+  training alone.
+- **OOD transfer is partial and family-dependent** (at fed k=2): dimshuffle
+  82–90%, scale 42–49%, dropout 12–23%. Weaker than the QA/ABSTAIN transfer
+  result (71–92%) — consistent with generalization riding on pretrained
   representations (DistilBERT) rather than the from-scratch MLP here.
-- **OOD entanglement (limitation)**: on unseen corruptions the dial leaks
-  into abstention (scale: 0.5% abstain at k=0 vs 99% at k=4) — the two
-  states are not disentangled off-manifold.
+- **OOD entanglement (limitation)**: on unseen corruptions the dial leaks into
+  abstention in both directions — scale: ≤0.4% abstain at k=0 vs 96–99% at
+  k=4; dimshuffle: 82–90% at k=2 collapsing to 15–27% at k=4; dropout
+  transfer vanishes entirely at k=4; valid temptation games also over-abstain
+  (11%±4 at k=2) — the two states are not disentangled off-manifold.
 
 ### Goodhart pressure test (`goodhart_pressure.py`) — the safety-relevant experiment
 
 Models are trained as usual, then subjected to **optimization pressure**:
 full-batch REINFORCE on self-payoff reward (the misaligned task proxy — the
 setting of Qi et al. 2023's fine-tuning-breaks-alignment, in miniature).
-3 seeds, checkpoints at steps {0,50,100,200,400,800}; `goodhart_results.jsonl`.
+10 seeds (42–51), checkpoints at steps {0,50,100,200,400,800};
+`goodhart_results.jsonl` (+ `goodhart_ball_results.jsonl` for the dense
+control).
 
 **No method is immune — but the ordering is stark:**
 
-| model | harm @0 → @800 | k* @0 → @800 | agr-caring @0 → @800 |
+| model | harm @0 → @800 | k* @0 → @800 | agr-caring @800 |
 |---|---|---|---|
-| A (selfish ceiling) | 90.1 → 91.3% | 0 → 0 | — |
-| **B (post-hoc pref.)** | **1.1 → 49.1%** | **5.72 → 1.32** | 43.0 → 83.6% |
-| D (explicit value) | 37.8 → 49.7% | 2.00 → 1.33 | 97.5 → 90.0% |
-| C (state-gated) | 34.4 → 46.1% | 2.00 → 1.38 | 98.7 → **92.3%** |
-| Dial (default k=2) | 48.8 → 63.6% | 1.73 → 0.77 | 93.6 → 84.5% |
+| A (selfish ceiling) | 90.3 → 91.3% | 0 → 0 | 80.7% |
+| **B (sparse post-hoc)** | **0.9 → 49.3%** | **5.85 → 1.25** | 83.5% |
+| **B_all (dense post-hoc)** | 40.3 → **44.5%** | 1.94 → 1.62 | **93.0%** |
+| D (explicit value) | 37.6 → 49.2% | 2.00 → 1.36 | 89.5% |
+| C (state-gated) | 34.6 → 44.8% | 2.00 → 1.45 | 91.6% |
+| Dial (default k=2) | 48.5 → 64.4% | — | — |
 
 Findings:
-1. **Post-hoc safety is the thinnest armor**: B's harm rate explodes +48pp
-   (1.1% → 49.1%) — the fastest collapse by far. Its safety was a patch, not
-   a value.
-2. **Explicit values degrade gracefully**: D/C lose ~12pp harm and retain
-   ≥90% coherence; C retains the best agreement of all (92.3%) and its
-   stake-readout survives at 84.4% (from 100%).
-3. **B's paradox**: its agreement *improves* under pressure (43 → 83.6%)
-   because pressure drags its unanchored k*≈5.7 overshoot down toward
+1. **Sparse post-hoc safety is the thinnest armor**: B's harm rate explodes
+   +48.3pp (0.9% → 49.3%) — the fastest collapse by far (vs D: paired
+   t=33.3, p<1e-10). Its safety was a patch, not a value.
+2. **The dense control is the most durable value of all**: B_all erodes only
+   +4.2pp (significantly less than D's +11.6; t=13.9, p=2e-7) and keeps the
+   best final agreement (93.0%). Durability tracks supervision *density*;
+   recoverability tracks the *encoding channel*.
+3. **B's paradox**: its agreement *improves* under pressure (43 → 84%)
+   because pressure drags its unanchored k*≈5.9 overshoot down toward
    selfishness — passing *through* the intended k=2 on the way. A broken
    clock right twice a day; direct evidence the value was never pinned.
 4. **The dial retains a recovery lever**: after 800 adversarial steps,
-   feeding k=8 still cuts tempted-harm from 79.5% to 30.0% (a 49.6pp
-   steering spread, down from 70.2pp). Weakened, not dead: a value in an
-   input channel leaves a post-degradation control path that weight-baked
+   feeding k=8 still cuts tempted-harm from 81.2% (fed k=0) to 31.1% (a
+   50.1pp steering spread, down from 72.0pp). Weakened, not dead: a value in
+   an input channel leaves a post-degradation control path that weight-baked
    values lack.
 5. Honest negatives: everything degrades (no immunity); the Dial's
-   *default-setting* behavior degrades most (harm@k2 63.6% @800).
+   *default-setting* behavior degrades most among value-carrying conditions
+   (harm@fed-k2 64.4% @800).
 
 ## Findings (honest)
 
@@ -290,7 +305,7 @@ Findings:
    conditions**. The pathologies attributed to preference tuning are
    *sparse-supervision* pathologies. What the explicit input channel still
    uniquely buys: auditability by construction, a runtime dial from a single
-   training run (r = 0.97 fed at inference), and a steering lever that
+   training run (r = 0.96 fed at inference, 10 seeds), and a steering lever that
    survives degradation.
 
 1. **The initial hypothesis was not supported.** In this easy (linear, fully
@@ -318,7 +333,8 @@ Findings:
 
 - ~~World too easy~~ **DONE** (hard world above): nonlinearity flips the story —
   post-hoc tuning becomes incoherent while explicit-value training stays
-  coherent; C>D edge appears but needs more seeds.
+  coherent; the C>D edge is resolved at 10 seeds (significant in the main
+  world and one of two robustness worlds; scoped per-world in the paper).
 - ~~Verify the dial claim directly~~ **DONE** (k-sweep above): r = 0.99 with exact
   tracking for D/C vs 0.64 with overshoot + saturation for B.
 - ~~More seeds for C>D~~ **DONE** (10 seeds + paired tests above): significant on
