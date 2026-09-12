@@ -124,7 +124,7 @@ def f3_runtime_dial():
     ax.annotate("training ks", (4.1, 0.4), fontsize=8, color="gray")
     ax.set_xlabel("dial setting fed at inference (k)")
     ax.set_ylabel("effective k*")
-    ax.set_title("one model tracks the runtime dial\n(interpolates at k=3, ceiling at 8)", fontsize=10)
+    ax.set_title("one model tracks the runtime dial\n(10 seeds; interpolates at k=3, ceiling at 6-8)", fontsize=10)
     ax = axes[1]
     ax.errorbar(ks, th, yerr=th_e, marker="s", ms=6, capsize=3, color=C["B"], lw=1.6)
     ax.set_xlabel("dial setting fed at inference (k)")
