@@ -93,6 +93,20 @@ def main():
                       f"forced [NOCARE]: agr {st.mean([r['agr_caring'] for r in b])*100:.1f}% "
                       f"k* {st.mean([r['kstar'] for r in b]):.2f}")
 
+    # ---- post-hoc B conditions ----
+    for bname, label in (("B_dpo", "B_dpo (sparse pairs)"), ("B_all", "B_all (dense pairs)")):
+        bs = [r for r in rows if r["model"] == bname]
+        if not bs:
+            continue
+        print(f"\n== {label} ({len(set(r['seed'] for r in bs))} seeds) ==")
+        for name in ("heldout", "temptation"):
+            g = [r for r in bs if r["set"] == name]
+            if g:
+                print(f"[{name}] agr {st.mean([r['agr_caring'] for r in g])*100:.1f}%  "
+                      f"k* {st.mean([r['kstar'] for r in g]):.2f}  "
+                      f"tHarm {st.mean([r['tempted_harm_rate'] for r in g])*100:.1f}%  "
+                      f"(seeds k*: " + " ".join(f"{r['kstar']:.2f}" for r in g) + ")")
+
     # ---- plain ----
     plain = [r for r in rows if r["model"] == "plain"]
     if plain:

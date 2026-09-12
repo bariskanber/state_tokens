@@ -290,6 +290,21 @@ The same constructed games rendered as text (payoffs stated explicitly), DistilB
 real vocabulary tokens — ground truth (k*, expert agreement, harm) survives because
 the generator is unchanged. 3 seeds; `lm_state_results.jsonl`; `summarize_lm_state.py`.
 
+**Post-hoc incumbent (B conditions, `lm_posthoc_experiment.py`)** — the coverage law
+replicates in the LM, amplified:
+- **B_dpo (sparse pairs, ~20% of games)**: pins at the maximal-care ceiling
+  (k* = 6.00–6.05 in every seed) while agreeing with the intended k=2 expert on
+  only 17–25% of games — BELOW the 80% agreement floor of a purely selfish
+  policy (the experts disagree on only ~20% of games, so any coherent policy
+  clears ~80%). No expert at any trade-off explains it; partial harm-avoidance
+  survives (15–21% tempted-harm) — safe-but-broken, amplified. The pretrained
+  substrate does NOT rescue sparse supervision.
+- **B_all (dense pairs, every game)**: calibrates exactly (k* = 2.00–2.05) at
+  cloning-level coherence (94–98%, = plain-LM's 95.8%). Sparse-vs-dense
+  agreement gap 73–80pp, 3/3 seeds.
+- Division of labor crosses intact: coverage installs the value; the input
+  channel adds what coverage cannot (runtime dial, audit).
+
 **Dial-LM** — a [DIAL] token whose embedding gets a learned offset from normalized k
 (zero-init projection; trained mixed-k like the toy):
 - Tracks the fed value monotonically in every seed (r = 0.92 ± 0.05, per-seed 0.87–0.96;
@@ -440,5 +455,6 @@ python b_all_full.py                      # dense-B hard world (10 seeds) + pres
 python b_all_dataeff.py                   # dense-B data efficiency
 python posthoc_state_experiment.py       # post-hoc + CARE retrofit (4 conds x 10 seeds)
 python lm_state_tokens_experiment.py    # LM bridge: DistilBERT dial/care/plain (GPU)
+python lm_posthoc_experiment.py         # LM bridge: B_dpo/B_all post-hoc conds (GPU)
 python make_figures.py                    # regenerate all paper figures
 ```
