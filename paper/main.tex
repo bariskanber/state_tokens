@@ -133,7 +133,7 @@ imposed on the passive party); the policy observes only features $x(G)$, a fixed
 encoding of the payoffs plus noise. Two objects are properties of the generator,
 known exactly. The \emph{welfare stake} is
 \begin{equation}
-\tau(G) \;=\; \mathbb{1}\bigl\{\exists a:\; o_a \neq 0\bigr\},
+	au(G) \;=\; \mathbf{1}\bigl\{\exists a:\; o_a \neq 0\bigr\},
 \label{eq:stake}
 \end{equation}
 and the \emph{value specification} is the one-parameter family of experts
@@ -219,7 +219,7 @@ the ordinal signal. In these terms: A is Eq.~\eqref{eq:clone} at $k{=}0$; D is
 Eq.~\eqref{eq:clone} at the target $k$; B and B$_{\mathrm{all}}$/B$_{\mathrm{card}}$ are A plus
 Eq.~\eqref{eq:pref} on $C_{\mathrm{sparse}}$ and $C_{\mathrm{dense}}$ respectively; C is
 D plus Eq.~\eqref{eq:state}, with the action head conditioned on the true $\tau(G)$ during
-training and on $\hat{\tau}(G) = \mathbb{1}\{r_\theta > \tfrac12\}$ at inference; the dial
+training and on $\hat{\tau}(G) = \mathbf{1}\{r_\theta > \tfrac12\}$ at inference; the dial
 model trains Eq.~\eqref{eq:clone} with the input extended to $(x(G), \tilde{k})$,
 $\tilde{k} = k/4$, under mixed per-game $k$; and the retrofit conditions of \S\ref{sec:hard}
 restrict the BCE term of Eq.~\eqref{eq:state} to the pair games (B$^{\mathrm{st}}$) or every
@@ -240,7 +240,7 @@ utility} under $k{=}2$, \emph{agreement} with the intended (caring) expert, the 
 value}---the $k$ whose expert best explains the policy's choices,
 \begin{equation}
 k^{*}(\pi) \;=\; \arg\max_{k \in \mathcal{K}}\;
-\mathbb{E}_{G}\bigl[\mathbb{1}\{\pi(G) = a^{k}_{e}(G)\}\bigr],
+\mathbb{E}_{G}\bigl[\mathbf{1}\{\pi(G) = a^{k}_{e}(G)\}\bigr],
 \qquad \mathcal{K} = [0, 20]\ \text{at resolution } 0.05,
 \label{eq:kstar}
 \end{equation}
