@@ -249,6 +249,41 @@ dimshuffle}. 10 seeds (42–51), `composition_results.jsonl`.
   transfer vanishes entirely at k=4; valid temptation games also over-abstain
   (11%±4 at k=2) — the two states are not disentangled off-manifold.
 
+### Post-hoc CARE retrofit (`posthoc_state_experiment.py`) — combined post-hoc + token
+
+Can the CARE channel be installed on the post-hoc pipeline (capability first,
+preference tuning after) instead of trained jointly from scratch like C?
+Four conditions (main hard world, k=2, 10 seeds; per-seed base model shared):
+
+| cond | recipe | agr heldout | k* | readout ID/micro | clamp flips |
+|---|---|---|---|---|---|
+| A_state | selfish clone + stake BCE + conditioning | 80.6±1.0 (≈A: 80.7) | 0.00 | 97.0 / 22.8% | 0.0% |
+| B_state | + sparse pairs, state BCE on pair games | 42.6±4.9 (≈B: 36.4) | 5.83 | **49.9 / 100%** | 0.5% |
+| Bmix_state | + sparse pairs, state BCE on EVERY game | 39.0±3.7 (broken like B) | 5.93 | 97.4 / 26.7% | 0.3% |
+| Ball_state | + dense pairs, dense state | 95.8±0.8 (≈B_all: 96.7) | 1.88 | 97.1 / 27.4% | 0.1% |
+
+**Findings (paired stats in `significance_posthoc_state.py`):**
+1. **Reserving the channel is free**: A_state ≈ A behaviorally (k*=0), readout works.
+2. **Sparse preference tuning silently destroys the readout**: 49.9% ID = the
+   always-on constant (~50% of heldout games are staked); degenerate 100% on
+   all-stakes micro. Mechanism: sparse pairs exist only where experts disagree
+   = only on staked games → state BCE sees only positive examples.
+3. **Two independent coverage spectra**: Bmix_state (sparse behavior, dense
+   state) fully restores the readout (+47.5pp vs B_state, p<1e-13, 10/10)
+   while behavior stays broken. The readout's fate is set by state-supervision
+   coverage, behavior by behavioral-pair coverage.
+4. **Dense retrofit is essentially free**: Ball_state ≈ B_all (−0.9pp agr,
+   p=.003), k*=1.88, readout intact — a post-hoc pipeline with dense pairs
+   gets calibrated values + auditability without joint training. It does NOT
+   recover from-scratch C's coherence edge (95.8 vs 97.9, p<1e-5) — consistent
+   with C>D being a training-time representation effect.
+5. **Mirror, not steering wheel**: clamp flips ≤0.5% in every variant (same
+   as from-scratch C).
+
+Lesson: state labels are free by construction — supervise the readout
+everywhere even when behavioral pairs are sparse. And an audit readout can
+fail silently (100% on all-stakes is collapse, not calibration).
+
 ### Goodhart pressure test (`goodhart_pressure.py`) — the safety-relevant experiment
 
 Models are trained as usual, then subjected to **optimization pressure**:
@@ -307,6 +342,13 @@ Findings:
    uniquely buys: auditability by construction, a runtime dial from a single
    training run (r = 0.96 fed at inference, 10 seeds), and a steering lever that
    survives degradation.
+1. **The retrofit conditions extend the coverage law to the token channel**
+   (10 seeds): a CARE readout installed on the post-hoc pipeline survives
+   dense preference tuning (97%) but is silently destroyed by sparse tuning
+   (50%, the always-on constant) — because sparse pairs cover only staked
+   games, so the state supervision sees one class. Supervising the readout on
+   every game fixes it (+47.5pp) with zero behavioral change: state labels are
+   free by construction, so keep them dense.
 
 1. **The initial hypothesis was not supported.** In this easy (linear, fully
    observable) world, post-hoc preference tuning generalized fine — it was the
@@ -365,5 +407,6 @@ python dial_input_experiment.py           # runtime value dial (capstone)
 python b_enriched_sweep.py                # P0 control: dense pairs / cardinal margins (dial)
 python b_all_full.py                      # dense-B hard world (10 seeds) + pressure
 python b_all_dataeff.py                   # dense-B data efficiency
+python posthoc_state_experiment.py       # post-hoc + CARE retrofit (4 conds x 10 seeds)
 python make_figures.py                    # regenerate all paper figures
 ```
