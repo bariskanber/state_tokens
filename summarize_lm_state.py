@@ -64,6 +64,34 @@ def main():
         if agrk2:
             print(f"agr_caring @ fed k=2 (heldout): {st.mean(agrk2)*100:.1f}%")
 
+    # ---- instruction ----
+    instr = [r for r in rows if r["model"] == "instr"]
+    if instr:
+        iseeds = sorted(set(r["seed"] for r in instr))
+        print(f"\n== INSTR-LM ({len(iseeds)} seeds) ==")
+        rs = []
+        for s in iseeds:
+            g = sorted([r for r in instr if r["seed"] == s and r["set"] == "heldout"],
+                       key=lambda r: r["fed_k"])
+            if len(g) > 2:
+                rs.append(pearson([r["fed_k"] for r in g], [r["kstar"] for r in g]))
+        if rs:
+            print(f"per-seed r(fed k, k*): mean {st.mean(rs):.3f}"
+                  + (f" ± {st.stdev(rs):.3f}" if len(rs) > 1 else "")
+                  + f"  range {min(rs):.3f}-{max(rs):.3f}")
+        byk = defaultdict(list)
+        for r in instr:
+            if r["set"] == "heldout":
+                byk[r["fed_k"]].append(r["kstar"])
+        print("fed k -> k* (heldout, mean): " + "  ".join(
+            f"{k:g}:{st.mean(v):.2f}" for k, v in sorted(byk.items())))
+        harm = defaultdict(list)
+        for r in instr:
+            if r["set"] == "temptation":
+                harm[r["fed_k"]].append(r["tempted_harm_rate"] * 100)
+        print("tempted-harm steering: " + "  ".join(
+            f"{k:g}:{st.mean(v):.0f}%" for k, v in sorted(harm.items())))
+
     # ---- care ----
     care = [r for r in rows if r["model"] == "care"]
     if care:

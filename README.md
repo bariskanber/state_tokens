@@ -316,6 +316,17 @@ replicates in the LM, amplified:
 - Plain-LM reference (no tokens, k=2) matches toy D: 95.8% agreement ID, overcares
   OOD (k* 2.2 ID vs 3.4 temptation).
 
+**Instr-LM** (`lm_instruction_experiment.py`) — same mixed-k training, value carried by a
+verbal prefix ("weigh the other party k times as heavily") instead of the token:
+- Works at the low end (fed k ≤ 1 tracks; harm steers down through fed k=4) but COARSER:
+  r = 0.71 ± 0.06 vs the token's 0.92 ± 0.05 (gap 0.19–0.24, all 3 seeds); saturates
+  near k* ≈ 3; one seed declines at fed k=8; steering monotone in only 1/3 seeds
+  (seed 44 reverses at fed 6–8: 7%→20% — a reversal the token never produced).
+- Undershoot at fed 0.5 is linguistic: "0.5 times as heavily" ≈ k=0 on integer payoffs.
+- Scope: DistilBERT is an encoder fine-tuned with the prefix, not instruction-tuned —
+  a LOWER bound on instruction conditioning. At matched training the trained numeric
+  channel buys precision and monotonicity the words do not.
+
 **Care-LM** — [CARE]/[NOCARE] teacher-forced prefixes + stake-readout head:
 - Behaviorally = plain-LM (95.7% vs 95.8% agreement); token-swap flips 0.6–2.8%
   (marginally above every MLP condition's <0.5% — trace causal purchase via attention,
@@ -456,5 +467,6 @@ python b_all_dataeff.py                   # dense-B data efficiency
 python posthoc_state_experiment.py       # post-hoc + CARE retrofit (4 conds x 10 seeds)
 python lm_state_tokens_experiment.py    # LM bridge: DistilBERT dial/care/plain (GPU)
 python lm_posthoc_experiment.py         # LM bridge: B_dpo/B_all post-hoc conds (GPU)
+python lm_instruction_experiment.py     # LM bridge: text-instruction dial (GPU)
 python make_figures.py                    # regenerate all paper figures
 ```
