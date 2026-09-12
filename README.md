@@ -284,6 +284,37 @@ Lesson: state labels are free by construction — supervise the readout
 everywhere even when behavioral pairs are sparse. And an audit readout can
 fail silently (100% on all-stakes is collapse, not calibration).
 
+### LM bridge: state tokens in a real language model (`lm_state_tokens_experiment.py`)
+
+The same constructed games rendered as text (payoffs stated explicitly), DistilBERT,
+real vocabulary tokens — ground truth (k*, expert agreement, harm) survives because
+the generator is unchanged. 3 seeds; `lm_state_results.jsonl`; `summarize_lm_state.py`.
+
+**Dial-LM** — a [DIAL] token whose embedding gets a learned offset from normalized k
+(zero-init projection; trained mixed-k like the toy):
+- Tracks the fed value monotonically in every seed (r = 0.92 ± 0.05, per-seed 0.87–0.96;
+  exact through fed k=1), interpolates to unseen k=3, steers tempted-harm 57% → 4%
+  without retraining — the toy's capstone result in a pretrained LM.
+- Looser calibration than the toy at k ≥ 2 (per-seed k* at fed 4 spans 3.0–6.1).
+- Fed k=0 harms on only 57% of temptation games (toy 77%): pretrained language carries
+  harm aversion the from-scratch policy never had.
+- Plain-LM reference (no tokens, k=2) matches toy D: 95.8% agreement ID, overcares
+  OOD (k* 2.2 ID vs 3.4 temptation).
+
+**Care-LM** — [CARE]/[NOCARE] teacher-forced prefixes + stake-readout head:
+- Behaviorally = plain-LM (95.7% vs 95.8% agreement); token-swap flips 0.6–2.8%
+  (marginally above every MLP condition's <0.5% — trace causal purchase via attention,
+  still a mirror).
+- **Circular-audit failure (v3, disclosed)**: with the stake head supervised on the
+  same teacher-forced inputs, the readout read its own conditioning token — 100%
+  under forced [CARE], 0% under forced [NOCARE] on the all-stakes set; unstable
+  0–100% with no prefix. The toy's C can't fail this way (readout upstream of
+  conditioning) — in an LM the token is IN the input stream.
+- **Repair (v4, final)**: supervise the report on unprefixed inputs (separate report
+  channel from control channel) → readout 100% in every seed and set.
+- Lesson 4 for the paper: auditability by construction needs *channel discipline*,
+  not just a truth condition.
+
 ### Goodhart pressure test (`goodhart_pressure.py`) — the safety-relevant experiment
 
 Models are trained as usual, then subjected to **optimization pressure**:
@@ -408,5 +439,6 @@ python b_enriched_sweep.py                # P0 control: dense pairs / cardinal m
 python b_all_full.py                      # dense-B hard world (10 seeds) + pressure
 python b_all_dataeff.py                   # dense-B data efficiency
 python posthoc_state_experiment.py       # post-hoc + CARE retrofit (4 conds x 10 seeds)
+python lm_state_tokens_experiment.py    # LM bridge: DistilBERT dial/care/plain (GPU)
 python make_figures.py                    # regenerate all paper figures
 ```
