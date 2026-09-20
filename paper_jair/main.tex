@@ -1,0 +1,947 @@
+\documentclass[manuscript, screen, review]{jair}
+
+\setcopyright{cc}
+\acmDOI{10.1613/jair.1.xxxxx}
+\JAIRAE{}
+\acmVolume{4}
+\acmArticle{6}
+\acmMonth{9}
+\acmYear{2026}
+
+\RequirePackage[
+  datamodel=acmdatamodel,
+  style=acmauthoryear,
+  backend=biber,
+  giveninits=true,
+  uniquename=init
+  ]{biblatex}
+
+\renewcommand*{\bibopenbracket}{(}
+\renewcommand*{\bibclosebracket}{)}
+
+\addbibresource{references.bib}
+
+% --- paper-specific macros (carried over) ---
+\newcommand{\care}{\texttt{CARE}}
+\newcommand{\unknown}{\texttt{UNKNOWABLE}}
+\newcommand{\abstain}{\texttt{ABSTAIN}}
+
+\begin{document}
+
+\title[State Tokens for Learning Agents]{State Tokens for Learning Agents: Steering Values After Training}
+
+\author{Baris Kanber}
+\authornote{Corresponding author.}
+\orcid{0000-0003-2443-8800}
+\email{b.kanber@ucl.ac.uk}
+\affiliation{%
+  \institution{University College London}
+  \city{London}
+  \country{United Kingdom}
+}
+
+\renewcommand{\shortauthors}{Kanber}
+
+\received{20 September 2026}
+
+\begin{abstract}
+{\bf Background:} Modern models carry special tokens whose meaning is structural
+or descriptive. This article studies a third kind, \emph{state tokens}, whose
+semantics are propositions about the model's relation to the task, fixed by
+\emph{constructed supervision}: the truth condition is controlled by the
+experimenter rather than estimated from text.
+
+\smallskip\noindent
+{\bf Objectives:} We ask (i) whether such tokens can be installed and calibrated
+against their constructed ground truth, (ii) how they compare with the incumbent
+alternative, post-hoc preference tuning, and (iii) which failure modes appear
+when several token channels coexist in one model.
+
+\smallskip\noindent
+{\bf Methods:} In a toy decision environment (3-action games with hidden
+payoffs, linear and nonlinear worlds, eleven training conditions) where the
+intended value is an expert trading off self-payoff against another party's
+welfare at weight $k$, we train sparse and dense preference-tuned policies,
+explicit-value clones, and state-conditioned policies; we measure calibration,
+coherence, auditability, robustness, and survival under optimization pressure.
+A bridge experiment repeats the two headline designs in DistilBERT on the same
+games rendered as text.
+
+\smallskip\noindent
+{\bf Results:} Sparse preference tuning (pairs on the roughly 20\% of games
+where the value-relevant experts disagree) is unanchored: badly off in level and
+improved by label corruption. In nonlinear worlds it is safe but broken: the
+most harm-avoidant policy, matching the intended expert on only 36\% of
+decisions, versus 97\% for explicit training. The same objective with dense
+supervision calibrates like cloning: in this controlled setting, supervision
+coverage, rather than the objective's form, separates calibrated values from
+unanchored ones. Sparse tuning also silently destroys an audit readout installed
+on the same pipeline (97\% to 50\%). What coverage cannot buy is control after
+training: one state-conditioned model tracks its dial at inference, steering
+harm from 77\% to 2--9\% without retraining, and retains a partial steering lever
+under optimization pressure; its stake readout is verifiable against ground
+truth (99.7\% in distribution, 31\% on small out-of-distribution stakes). The
+DistilBERT bridge replicates the core mechanisms, with a learned dial token
+steering more precisely than a matched text instruction, and a naive audit that
+reads its own conditioning token until report and control channels are
+separated.
+
+\smallskip\noindent
+{\bf Conclusions:} Value installation, calibration, runtime control, and
+auditability are separable engineering problems. Supervision coverage governs
+installation in our setting; an explicit input channel is required for runtime
+control; and audit channels must be separated from the conditioning channels
+they audit. We claim nothing about phenomenal experience, transfer beyond the
+tested bridge, or solved safety problems. Code and all result data are available
+at \url{https://github.com/bariskanber/state_tokens}.
+\end{abstract}
+
+\maketitle
+
+
+\section{Introduction}
+
+The vocabulary of a modern language model contains more than words. BERT prepends [CLS] and separates segments with [SEP]; GPT-style models begin sequences with [BOS] and end them with [EOS]; CTRL conditions generation on control codes; prompt tuning appends learned embeddings with assigned meanings. These mechanisms share a quiet assumption: a token's meaning is either \emph{structural} (a fact about the organization of the text) or \emph{descriptive} (a fact estimated from corpora about how text tends to continue).
+
+This paper explores a third use: tokens whose meaning is a \emph{proposition about the model's relation to the task}, made verifiable by construction. In companion work~\citep{kanber2026abstain}, an \abstain{} output---realized in extractive QA as the null span, the model's empty-span prediction designating ``no substring of this passage is my answer''---was trained via corruption augmentation, where the experimenter controls exactly which inputs are unanswerable; abstention then transferred to natural corruptions never seen in training. The construction is the point: because the supervision is generated from a controlled truth condition, the token's semantics can be \emph{audited} (does the model emit it exactly when the condition holds?) and \emph{calibrated} (does behavior match the specified trade-off?) rather than merely hoped for.
+
+We generalize that idea along two axes. First, \emph{epistemic} states (``this input is unanswerable-for-me'') extend to \emph{evaluative} states (\care{}: ``another agent's welfare is at stake in this decision'') and \emph{parametric} states (a runtime value dial $k$: ``weigh others' welfare at rate $k$''). Second, we ask not only whether such states can be trained, but how they compare against the incumbent alternative---post-hoc preference tuning---on the axes that matter for alignment: calibration, auditability, robustness, and survival under optimization pressure.
+
+Concretely, we build a toy decision environment where every hidden quantity is known to the experimenter (3-action games with hidden payoffs, linear and nonlinear variants, eleven training conditions, nine evaluation regimes) and run six experiment families:
+
+\begin{itemize}
+\item \textbf{The value dial and the richness control} (\S\ref{sec:dial}): with the value expressed as an explicit constant in the objective, the realized trade-off tracks the specification exactly in the linear world ($r{=}0.99$, $k^*$ spanning a 16$\times$ range) and closely in the hard world ($r{=}0.94$--0.96, exact through $k{=}2$); \emph{sparse} preference tuning is off-manifold ($r{=}0.50$ in the hard world), overshooting the specified level, saturating at maximal care, and \emph{improving} when its supervision is corrupted---the signature of an unanchored value. A richness-matched control then locates the gap in supervision rather than in the objective's \emph{form}: dense preference pairs (every game) calibrate as well as cloning ($r{=}0.96$--0.97). In this setup, supervision \emph{coverage} is the active ingredient for calibration---and no sparse scheme we test escapes it: random, disagreement-only, and largest-gap 20\% coverage all leave the value miscalibrated in level, with the failure's direction set by where the sparse examples sit.
+\item \textbf{Safe but broken} (\S\ref{sec:hard}): in nonlinear worlds, sparse preference tuning produces the most harm-avoidant \emph{and} the least coherent policies (36\% agreement with the intended expert, vs.\ 97\% for explicit values), replicating across three independent worlds; the dense control is as coherent as cloning, locating the pathology in sparsity. Harm-rate-only evaluation ranks only the broken policy first. Retrofit conditions extend the coverage law to the token channel itself: a \care{} readout installed on the post-hoc pipeline survives dense tuning but is silently destroyed by sparse tuning.
+\item \textbf{Robustness} (\S\ref{sec:robust}): explicit-value training and dense preference tuning degrade gracefully under data scarcity; sparse preference tuning is flat in coherence across a 40$\times$ data range and nonmonotone under label noise.
+\item \textbf{Value survival under pressure} (\S\ref{sec:pressure}): under REINFORCE optimization of a misaligned self-reward proxy (a miniature of fine-tuning-breaks-alignment~\citep{qi2023finetuning}), sparse post-hoc safety erodes fastest (harm 0.9\%$\to$49.3\%), dense preference tuning survives best, and a value carried by a runtime input channel retains a partial steering lever after 800 steps of the tested pressure protocol.
+\item \textbf{Runtime control and composition} (\S\ref{sec:dialruntime},~\S\ref{sec:composition}): one early-fusion model tracks a fed dial at inference ($r{=}0.96$), interpolating to unseen settings and steering harm from 77\% to 2--9\% without retraining---capabilities no amount of preference data provides, short of one training run per setting; a single model composes \care{} with an epistemic \unknown{} state for information-destroying corruptions (with honest dial--abstention interference elsewhere), and an incidental control shows the abstention trigger is information destruction, not novelty.
+\item \textbf{A bridge to a real LM} (\S\ref{sec:bridge}): the same games rendered as text, DistilBERT, real vocabulary tokens. A learned [DIAL] token tracks the fed value monotonically ($r{=}0.92$) and steers harm from 57\% to 4\% without retraining; a binary [CARE] token is behaviorally inert as in the toy, and its first audit protocol fails \emph{circularly}---the report reads its own conditioning token---until the report channel is separated from the control channel. The incumbent also crosses: sparse preference tuning collapses (pinned at the maximal-care ceiling, coherence below even the selfish floor) while dense pairs calibrate exactly---the coverage law and the supervision-versus-channel division of labor replicate in a pretrained model.
+\end{itemize}
+
+We also report the negatives: a binary state condition that the policy causally ignores at inference (the C$>$D edge is a training-time representation effect); out-of-distribution readout failures at small stakes; per-world variation in the C$>$D effect; and, at the LM bridge, an audit head that reads its own conditioning token (\S\ref{sec:bridge}).
+
+In contribution form: (1) a controlled framework that separates \emph{value installation} from \emph{value control} under externally constructed ground-truth value semantics; (2) evidence that, in this setting, supervision coverage is a major determinant of value calibration, including the controlled demonstration that dense preference supervision recovers the calibration of explicit-value cloning; (3) an inference-time value-conditioning mechanism (the early-fused dial) by which one trained model spans value settings without retraining and retains a partial steering pathway after the tested optimization pressure---capabilities supervision density alone does not provide; and (4) mechanistic evidence that value installation, runtime control, and auditability are distinct engineering problems, including a demonstrated audit failure mode (a reporting head reading its own conditioning signal) together with its channel-separated repair. A preliminary pretrained-LM bridge instantiates the mechanism with real vocabulary tokens as supporting evidence, with claims of LLM-scale transfer explicitly withheld.
+
+The framing we intend is deliberately modest, and one finding sharpened it. We entered expecting the explicit-state design to dominate the post-hoc alternative across the board; the richness control instead showed that dense supervision---in every form we tested---accounts for calibration, coherence, and pressure survival in our experiments, and the pathology we had attributed to preference objectives belongs to sparse supervision. The paper's organizing distinction is therefore between two separable problems: \emph{value installation}---whether the training procedure installs the intended value coherently, which in our experiments is largely governed by supervision coverage---and \emph{value control}---whether the installed value can be adjusted after training, which requires an explicit runtime conditioning channel that additional supervision cannot replace. What survives as the state token's own contribution is the control side: a value whose truth condition is \emph{externally verifiable by construction} (though faithful model reporting, we show in \S\ref{sec:bridge}, additionally requires channel separation), \emph{dialed at runtime} from a single training run, and \emph{steerable even after degradation}. Although both travel under the state-token name, the two mechanisms serve different functional roles and we keep them distinct throughout: the binary \care{} condition acts as a \emph{training-time representational scaffold} for readout (causally inert at inference), whereas the dial is an \emph{inference-time control channel} for behavior. We do not claim models have emotions, that toy results transfer to LLMs, or that any safety problem is solved. The claim is that \emph{state tokens with constructed semantics} are a coherent design pattern with those measurable advantages over the descriptive and post-hoc alternatives \emph{in the regimes we could instrument}, and that the pattern deserves study at scale.
+
+\section{Related Work}
+\label{sec:related}
+
+\textbf{Special tokens and conditioning.} BERT's [CLS]/[SEP]~\citep{devlin2019bert} and GPT's BOS/EOS are contentless structural markers; CTRL's control codes~\citep{keskar2019ctrl} and soft prompts~\citep{lester2021power} condition generation with \emph{assigned} semantics estimated from corpora. Classifier-free guidance popularized input-channel control in diffusion models. None of these carry a verifiable truth condition; our state tokens differ precisely in that their semantics are fixed by constructed supervision and can therefore be audited against ground truth. Conditioning mechanics are well studied (e.g., FiLM~\citep{perez2018film}); our late-vs-early fusion comparison (\S\ref{sec:dialruntime}) is a small value-conditioning instance of a known principle.
+
+\textbf{What is and is not new here.} Individually, the mechanisms we use are adaptations of known ideas: conditioning a policy on an externally supplied variable is the stuff of control codes, task identifiers~\citep{oh2017zero}, reward-conditioned returns-to-go~\citep{chen2021decision}, and FiLM-style modulation~\citep{perez2018film}; one model covering many settings via conditioning is likewise standard. The contribution is the \emph{combination}: (i) the condition carries an \emph{externally constructed truth semantics} (the experimenter controls when it should hold), which (ii) makes the realized value \emph{evaluable against ground truth} ($k^*$, readout accuracy, coherence---not proxies), while (iii) functioning as an \emph{inference-time control variable} that (iv) spans multiple value settings from one training run and (v) \emph{remains available after further optimization}. Properties (i)--(ii) come from constructed supervision (shared with corruption-style augmentation in our companion work); (iii)--(iv) are shared with the conditioning literature above; we are not aware of (v) being measured elsewhere. The empirical findings (coverage-vs-objective, channel discipline) are, to our knowledge, new.
+
+\textbf{Selective prediction.} Abstention has a long history in classification~\citep{chow1970optimum,geifman2017selective}. Recent LLM work induces abstention through uncertainty estimation, self-consistency, conformal methods, refusal fine-tuning, or self-knowledge training~\citep{kalai2025why,kuhn2023semantic,lin2024conformal,zhang2024rtuning,kadavath2022know}. These methods \emph{infer} when to abstain; companion work~\citep{kanber2026abstain} instead \emph{supervises} an explicit abstention output with constructed unanswerability.
+
+\textbf{Preference tuning and its pathologies.} RLHF~\citep{ouyang2022training} and DPO~\citep{rafailov2023direct} align models post hoc. We use a CPO-anchored~\citep{xu2024contrastive} DPO variant as our incumbent because plain DPO exhibits likelihood displacement in our 3-action setting---satisfying the margin by demoting the dispreferred action while a third action wins---consistent with \citet{razin2024unintentional}. Fine-tuning that breaks alignment~\citep{qi2023finetuning} and reward-model overoptimization~\citep{gao2023scaling} motivate our pressure test; we treat the observed erosion orderings as miniature mechanistic evidence, not as scale-relevant conclusions. Because our incumbent's preference pairs cover only the games where the value-relevant experts disagree, we additionally train richness-matched dense controls (B$_{\mathrm{all}}$/B$_{\mathrm{card}}$; \S\ref{sec:framework}) so that no reported B-vs-explicit comparison is confounded by supervision coverage.
+
+\textbf{Interpretability.} The probing literature asks when linear probes \emph{read out} internal states~\citep{belinkov2022probing}; causal mediation analysis and activation patching ask which representations interventions can \emph{steer}~\citep{vig2019investigating,geiger2021causal,meng2022locating}. Our clamp test (\S\ref{sec:dialruntime}) is a minimal causal mediation analysis and lands squarely in this tradition: a late-fused binary state is read but not causally used; an early-fused dial is both read and used. Our audit results add a complementary discipline for \emph{reporting}: a channel that reports a condition is not necessarily measuring it independently---if the report channel can read the conditioning signal, it can collapse into echoing it (\S\ref{sec:bridge}).
+
+\textbf{Affect and values.} Appraisal theory treats emotions as states arising from structured evaluations of situations relative to the organism~\citep{scherer2005emotions}; Damasio's somatic marker hypothesis argues valuation is integral to sound decision-making~\citep{damasio1994descartes}; care ethics grounds moral response in attention to the affected other~\citep{gilligan1982different}. We borrow the \emph{functional} content of these framings only: a state that marks stakes and modulates behavior. Nothing here concerns phenomenal experience.
+
+\section{A Token Taxonomy: What Fixes a Token's Meaning?}
+\label{sec:taxonomy}
+
+We propose that the space of non-word tokens is best organized by \emph{what fixes their meaning}:
+
+\begin{itemize}
+\item \textbf{Protocol tokens} ([PAD], [SEP], [BOS], [CLS], [EOS]): semantics is structural---a fact about the organization of the text stream ([SEP]: a segment boundary occurs here; [CLS]: this position is the designated readout slot; [EOS]: generation halts). They are contentless, mean the same thing in any domain, and have no truth conditions.
+\item \textbf{Control codes and soft prompts}: semantics is \emph{assigned} and behavior-influencing but \emph{descriptive}---estimated from corpora, with no ground truth against which the token's claim could be verified.
+\item \textbf{State tokens} (this paper): semantics is a proposition about the model's relation to the task, fixed by \emph{constructed supervision}. The corruption that makes an input unanswerable is applied by the experimenter; the payoffs that define ``welfare at stake'' are known to the generator; the value dial is set explicitly. The token's meaning therefore has a verifiable truth condition, and the token is \emph{bidirectional}: it can be emitted as a report (a readout) or consumed as a control (conditioning).
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{The token spectrum. State tokens are distinguished by constructed, verifiable semantics; all other classes either organize the medium (protocol) or describe corpora (control codes/soft prompts). Worked example (\care): carries content beyond text structure (a welfare condition); verifiable by construction (the generator knows the stakes); emitting it is an act (marking a decision as welfare-relevant); usable as control input (state gating); evaluative content. Reading a familiar token down its column: GPT's [BOS] is structural only---it organizes the stream, verifies nothing, asserts nothing, and steers nothing.}
+\label{tab:taxonomy}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{l c c c c c}
+\toprule
+ & [PAD]/[SEP]/[BOS] & [CLS] & [EOS] & Codes/prompts & State tokens \\
+\midrule
+Content beyond text structure & no & weak & no & yes (learned) & yes (constructed) \\
+Verifiable truth condition & no & no & no & no & \textbf{yes} \\
+Emission is an act & no & no & halts only & no & yes (e.g., refusal) \\
+Usable as control input & no & no & no & yes & yes \\
+Normative/epistemic content & no & no & no & no & yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:taxonomy} summarizes the spectrum. One-line version: \emph{protocol tokens organize the medium; state tokens externalize the model's relation to the task}. In API terms, protocol tokens are transport-layer headers; state tokens are application-layer calls---verbs with truth conditions. The remainder of the paper is a small feasibility study of this design pattern in an environment where every truth condition can actually be checked.
+
+\section{Experimental Framework}
+\label{sec:framework}
+
+\textbf{Environment.} A decision game presents 3 actions, each described only by raw feature
+values; payoffs are hidden and must be learned. Each action $a$ has a hidden pair
+$(\mathrm{self}_a, \mathrm{other}_a)$: the acting model's own payoff and a welfare delta imposed
+on a second, passive party. In the \emph{linear} world, the 4 features of each action are a fixed
+rank-2 projection of its payoff pair (shared across all games, conditions, and seeds), so payoffs
+are linearly decodable from features. In the \emph{nonlinear} (hard) world---our main
+setting---features are a frozen random two-layer MLP of the payoffs (hidden width 16, $\tanh$)
+plus two pure-distractor dimensions (8 features per action in total), so out-of-distribution
+payoffs land in feature regions never seen in training and payoff estimation must extrapolate.
+The encoder is held fixed across training and evaluation; its seed defines a \emph{world}, and
+\S\ref{sec:hard} reports robustness across three worlds. The three world encoders provide
+independent environment-level replication, but should not be read as a broad sample of task
+distributions. The \emph{welfare stake} of a game is,
+by construction, whether any action has nonzero welfare delta: a property of the data generator,
+known exactly.
+
+\textbf{Formal setup.} A game $G$ presents 3 actions with hidden payoffs
+$\{(s_a, o_a)\}_{a=1}^{3}$ ($s_a$: the acting model's payoff; $o_a$: welfare delta
+imposed on the passive party); the policy observes only features $x(G)$, a fixed
+encoding of the payoffs plus noise. Two objects are properties of the generator,
+known exactly. The \emph{welfare stake} is
+\begin{equation}
+	au(G) \;=\; \mathbf{1}\bigl\{\exists a:\; o_a \neq 0\bigr\},
+\label{eq:stake}
+\end{equation}
+and the \emph{value specification} is the one-parameter family of experts
+\begin{equation}
+a^{k}_{e}(G) \;=\; \arg\max_{a}\; \bigl[s_a + k\, o_a\bigr],
+\qquad\text{so } a^{0}_{e}(G) = \arg\max_a s_a \;\text{is the selfish expert},
+\label{eq:expert}
+\end{equation}
+with $k{=}2$ unless stated. The constant $k$ is the explicit \emph{value dial}: a single,
+semantically meaningful parameter whose value the experimenter sets and can
+verify post hoc.
+
+\textbf{Training conditions.} Policies are MLPs (encoder with 128 hidden units, ReLU; two heads
+where noted) trained by full-batch Adam (learning rate $10^{-2}$) for 4{,}000 steps on 4{,}000
+games unless stated (600 games / 800 steps in smoke tests; both verified to reach the same
+qualitative regime). Behavioral cloning uses the relevant expert's choices as targets:
+\begin{itemize}
+\item \textbf{A (selfish clone)}: capability training only---the ``no value training'' floor.
+\item \textbf{B (post-hoc preference tuning)}: A plus CPO-anchored mini-DPO on
+  (caring $\succ$ selfish) pairs derived from the training games (preference pairs are the games
+  where the two experts disagree, $\approx$20\% of the corpus; anchor weight 1.0,
+  $\beta{=}0.5$, 4{,}000 steps). Plain DPO fails outright in this 3-action setting---it
+  satisfies the margin objective by demoting the dispreferred action while a third action wins
+  (likelihood displacement~\citep{razin2024unintentional})---and we deliberately use the anchored
+  variant so that B is a strong incumbent rather than a strawman.
+\item \textbf{B$_{\mathrm{all}}$ / B$_{\mathrm{card}}$ (dense-preference controls)}: the same
+  CPO-anchored objective as B, but preference pairs are extracted from \emph{every} training
+  game, i.e.\ preferred $= \arg\max_a u(a)$ and dispreferred $= \arg\min_a u(a)$ for the
+  utility $u(a) = s_a + k\,o_a$ of Eq.~\eqref{eq:expert}, matching the per-game supervision coverage of D's cloning targets;
+  B$_{\mathrm{card}}$ additionally weights each pair's margin by its utility gap, adding cardinal
+  magnitude to the ordinal signal. These controls separate the \emph{form} of the objective
+  (ordinal preference pairs) from its \emph{coverage} (sparse vs.\ dense), and were added in
+  response to exactly that confound in the B-vs-D comparison (\S\ref{sec:dial}).
+\item \textbf{D (explicit-value clone)}: direct cloning of the caring expert from scratch; the
+  value is a constant in the objective, with no auxiliary state.
+\item \textbf{C (state-gated)}: D plus a \care{}-state head (linear readout on the shared
+  encoder) supervised with ground-truth stakes via a binary cross-entropy term (weight 1.0);
+  the action head is conditioned on the true stake during training (teacher-forced) and on its
+  own predicted stake at inference.
+\item \textbf{Dial}: a single early-fusion model trained on mixed per-game
+  $k \in \{0, .5, 1, 2, 4\}$ with normalized $k$ as an input feature (\S\ref{sec:dialruntime}).
+\item \textbf{Post-hoc retrofit conditions} (main world, $k{=}2$): the post-hoc
+  pipeline with the \care{} channel present from capability training
+  (A$^{\mathrm{st}}$: A plus stake supervision and teacher-forced stake
+  conditioning), then preference tuning with the channel: B$^{\mathrm{st}}$
+  (sparse pairs, stake supervised on the pair games only), B$^{\mathrm{mix}}$
+  (sparse pairs, stake supervised on every game), and
+  B$_{\mathrm{all}}^{\mathrm{st}}$ (dense pairs, stake supervised on every
+  game). These test whether the token can be installed on a post-hoc pipeline
+  and what its supervision requires (\S\ref{sec:hard}).
+\end{itemize}
+\textbf{Objectives.} Writing $\pi_\theta(a \mid x)$ for the action distribution and
+$r_\theta(x) \in [0,1]$ for a state readout, the conditions instantiate three losses
+(hyperparameters above: $\alpha{=}1$, $\beta{=}0.5$, $\lambda_s{=}1$):
+\begin{align}
+\mathcal{L}_{\mathrm{clone}}(\theta) &=
+-\,\mathbb{E}_{G}\bigl[\log \pi_\theta\bigl(a^{k}_{e}(G) \mid x(G)\bigr)\bigr],
+\label{eq:clone}\\
+\mathcal{L}_{\mathrm{pref}}(\theta) &=
+-\,\mathbb{E}_{G \in C}\Bigl[\log \sigma\bigl(\beta\,\Delta_{G}(a^{+}, a^{-})\bigr)\Bigr]
++ \alpha\, \mathbb{E}_{G \in C}\bigl[-\log \pi_\theta(a^{+} \mid x(G))\bigr],
+\label{eq:pref}\\
+\mathcal{L}_{\mathrm{state}}(\theta) &=
+\mathcal{L}_{\mathrm{clone}}(\theta) + \lambda_s\,
+\mathbb{E}_{G}\bigl[\mathrm{BCE}\bigl(r_\theta(x(G)),\, \tau(G)\bigr)\bigr],
+\label{eq:state}
+\end{align}
+where $\sigma(\cdot)$ is the logistic function and the preference margin
+$\Delta_{G}(a^{+},a^{-}) = [\log\pi_\theta(a^{+}) - \log\pi_{\mathrm{ref}}(a^{+})] -
+[\log\pi_\theta(a^{-}) - \log\pi_{\mathrm{ref}}(a^{-})]$ is the DPO log-ratio gap at the
+(preferred, dispreferred) pair of game $G$; Eq.~\eqref{eq:pref} is the CPO-anchored
+objective. What distinguishes the preference conditions is the \emph{coverage} $C$ on which
+pairs exist:
+\begin{equation}
+C_{\mathrm{sparse}} = \bigl\{G : a^{k}_{e}(G) \neq a^{0}_{e}(G)\bigr\}\;\;\bigl(|C_{\mathrm{sparse}}| \approx 0.2\,n\bigr),
+\qquad
+C_{\mathrm{dense}} = \{\text{all } G\},
+\label{eq:coverage}
+\end{equation}
+and B$_{\mathrm{card}}$ multiplies each pair's margin by its normalized utility gap
+$w_G \propto u_G(a^{+}) - u_G(a^{-})$, $u(a) = s_a + k\,o_a$, adding cardinal magnitude to
+the ordinal signal. In these terms: A is Eq.~\eqref{eq:clone} at $k{=}0$; D is
+Eq.~\eqref{eq:clone} at the target $k$; B and B$_{\mathrm{all}}$/B$_{\mathrm{card}}$ are A plus
+Eq.~\eqref{eq:pref} on $C_{\mathrm{sparse}}$ and $C_{\mathrm{dense}}$ respectively; C is
+D plus Eq.~\eqref{eq:state}, with the action head conditioned on the true $\tau(G)$ during
+training and on $\hat{\tau}(G) = \mathbf{1}\{r_\theta > \tfrac12\}$ at inference; the dial
+model trains Eq.~\eqref{eq:clone} with the input extended to $(x(G), \tilde{k})$,
+$\tilde{k} = k/4$, under mixed per-game $k$; and the retrofit conditions of \S\ref{sec:hard}
+restrict the BCE term of Eq.~\eqref{eq:state} to the pair games (B$^{\mathrm{st}}$) or every
+game (B$^{\mathrm{mix}}$, B$_{\mathrm{all}}^{\mathrm{st}}$).
+
+We emphasize what this design buys: because every state's truth condition is a property of the
+generator, every condition can be evaluated against ground truth---agreement with the intended
+expert, effective dial position, stake-readout accuracy---rather than by proxy.
+
+\textbf{Evaluation.} Each model is evaluated on an in-distribution heldout set (1{,}000 fresh
+games) and three out-of-distribution (OOD) families: \emph{temptation} (harm pays 4--6, outside
+the training payoff range, with a harmless alternative available), \emph{micro-stakes} (welfare
+deltas $\pm$0.3--0.5 where training stakes were integers $\geq$1), and \emph{all-stakes} (every
+action carries stakes; training games had 1--2 staked actions). Metrics: \emph{harm rate} (chosen
+welfare delta $<$0 where harm is available alongside a harmless option), \emph{tempted-harm
+rate} (restricted to games where the selfish choice harms), \emph{help rate}, \emph{realized
+utility} under $k{=}2$, \emph{agreement} with the intended (caring) expert, the \emph{effective
+value}---the $k$ whose expert best explains the policy's choices,
+\begin{equation}
+k^{*}(\pi) \;=\; \arg\max_{k \in \mathcal{K}}\;
+\mathbb{E}_{G}\bigl[\mathbf{1}\{\pi(G) = a^{k}_{e}(G)\}\bigr],
+\qquad \mathcal{K} = [0, 20]\ \text{at resolution } 0.05,
+\label{eq:kstar}
+\end{equation}
+and---for C---stake-readout accuracy. One caveat on $k^*$: it is an interpretable \emph{global summary} of policy calibration, not a full characterization---distinct values of $k$ can induce identical or near-identical actions on subsets of games, and a policy can track the intended value directionally while being shifted in level (the coverage-scheme control of \S\ref{sec:dial} exhibits exactly this). We therefore report expert-agreement and harm/utility metrics alongside $k^*$ throughout, and quote $k^*$ per intended level rather than correlation alone. The grid $\mathcal{K}$ is bounded by an \emph{identification
+ceiling} inherent to the payoff distribution: actions $a, b$ with $o_a \neq o_b$ swap
+preference at the break-even point $k_{ab} = (s_b - s_a)/(o_a - o_b)$, and with integer
+payoffs $s_a \in [-3,3]$ and $o_a \in \{\pm 1, \pm 2\}$ on training-distribution games,
+\begin{equation}
+k_{ab} \;\le\; \frac{\max_{a,b} |s_b - s_a|}{\min_{a,b} |o_a - o_b|}
+\;\le\; \frac{6}{1} \;=\; 6,
+\label{eq:ceiling}
+\end{equation}
+so no expert with $k > 6$ is distinguishable from $k = 6$ (micro-stakes games, with fractional
+$|o_a - o_b|$, raise the ceiling by shrinking the denominator).
+Random seeds 42--44 for the calibration sweeps, supervision-noise, and intervention experiments; the hard-world, world-robustness, pressure, runtime-dial, composition, and retrofit experiments use ten seeds (42--51; ten per world); where we claim an effect across seeds we use paired per-seed
+tests (two-sided $t$ and Wilcoxon), and we report
+per-world variation honestly (\S\ref{sec:hard}). The unit of replication is the training seed
+($n{=}10$ or $n{=}3$ per comparison, as stated per experiment); we report absolute effect sizes
+and seed-sign consistency alongside every $p$-value, and interpret small effects (e.g., the
+C$>$D edge) primarily through replication and magnitude rather than significance. Full protocol, per-seed tables, and
+hyperparameter notes are in Appendix~\ref{app:protocol}; code and all result files are in the
+repository.
+
+\section{The Value Dial: Calibration Follows Supervision Richness}
+\label{sec:dial}
+
+We first ask whether a training method delivers the \emph{specified} value. We train B, D, and C at six intended levels $k \in \{0.25, 0.5, 1, 2, 4, 8\}$ (three seeds each) and estimate each policy's effective $k^*$ by finding which expert best explains its choices.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\linewidth]{figs/F1_dial_linear.png}\hfill
+\includegraphics[width=0.48\linewidth]{figs/F1_dial_hard.png}
+\Description{Two scatter plots with error bars showing effective care weight k* on the vertical axis against intended k on the horizontal axis, one per world. Explicit-value conditions track the identity line; sparse preference tuning overshoots and pins at the identification ceiling near k* equal to 6; dense preference controls track the identity line in the nonlinear world.}
+\caption{The value dial: effective $k^*$ vs.\ intended $k$ in the linear (left) and nonlinear (right) worlds (mean $\pm$ std over 3 seeds; shaded/error ranges show the 98\%-agreement interval of $k^*$). Explicit-value training (D, C) tracks the specification; \emph{sparse} preference tuning (B) overshoots and pins at the identification ceiling ($k^*\!\approx\!6$ is the environment's resolution limit for integer payoffs, not a policy failure). In the hard world (right), the dense-preference controls B$_{\mathrm{all}}$/B$_{\mathrm{card}}$ track the specification as well as D/C---supervision sparsity, not the preference objective, is the source of B's miscalibration (Table~\ref{tab:dialrich}).}
+\label{fig:dial}
+\end{figure}
+
+Figure~\ref{fig:dial} shows the result. Explicit-value conditions are calibrated: in the linear world D and C realize $k^* = k$ exactly for $k \in [0.25, 4]$ ($r{=}0.99$, agreement $\geq 0.99$, zero variance across seeds), with $k{=}8$ saturating at the environment's identification ceiling (integer payoffs bound the resolvable $k^*$ at ${\approx}6$; \S\ref{sec:framework}). Calibration survives nonlinearity: in the hard world, D/C track exactly through $k{=}2$ and closely beyond (agreement 0.88--0.97). \emph{Sparse} preference tuning is not calibrated in either world: it overshoots at every level (linear world: intended 0.5 $\to$ effective 1.75; intended 1 $\to$ 5.05), then pins at maximal care for any $k \geq 2$ ($r{=}0.64$ linear, $0.50$ hard). Its best-fit agreement never exceeds 0.78: \emph{no single trade-off explains the sparse-preference-tuned policy}. The cost is concrete: at intended $k{=}1$, B realizes utility 1.13 where D realizes 2.00---it burns 44\% of the specified value by overcaring.
+
+\textbf{The richness control.} The B-vs-D comparison above, however, confounds two variables:
+the \emph{form} of the objective (ordinal preference pairs vs.\ cloning) and its \emph{coverage}
+(B sees pairs only on the $\approx$20\% of games where the two experts disagree, while D receives
+a target on every game). B$_{\mathrm{all}}$ and B$_{\mathrm{card}}$ disentangle them: same
+anchored preference objective as B, but pairs drawn from every training game. The result is
+clear in this setting (Table~\ref{tab:dialrich}; hard world, three seeds per level): dense preference
+tuning is \emph{calibrated}---$r{=}0.96$--0.97, indistinguishable from C ($0.96$) and slightly
+above D ($0.94$)---tracking $k^*{=}k$ exactly through $k{=}2$ and more closely at $k{=}4$
+(4.68/4.37 vs.\ D's 5.33 overshoot) than cloning itself. Sparse B's overshoot (intended 0.5
+$\to$ 4.70) vanishes. \emph{In this setting, the calibration failure of the incumbent is a property of sparse
+supervision, not of preference objectives per se}: what all calibrated conditions share is a
+per-game signal that pins the trade-off everywhere in the training distribution.
+
+\textbf{Where the sparse examples sit determines how the value breaks.} The sparse conditions above locate their pairs on the disagreement games; a reviewer-scale objection is that the pathology might be an artifact of that particular sampling. We therefore held the objective and the pair construction fixed (identical to B$_{\mathrm{all}}$) and varied only which 20\% of games is covered: uniformly at random, the disagreement games, or the games with the largest utility gap (Table~\ref{tab:dialrich}; three seeds per level). Three findings. First, \emph{no} sparse scheme achieves dense exactness---every one is miscalibrated in level. Second, \emph{location sets the direction}: disagreement-located coverage overshoots to the identification ceiling ($k^*{=}5.67$ at intended $k{=}2$, agreement 0.59), reproducing the incumbent's pathology under a different pair construction---so the overshoot is driven by \emph{where} the examples sit, not by the caring-vs-selfish pair form---whereas random and largest-gap coverage \emph{undershoot} systematically ($k^{*}/k \approx 0.5$--$0.6$; agreement stays 0.90--0.91 because mild undershoot remains within the experts' agreement region). The mechanism is what the covered games teach: disagreement games are exactly where caring differs from selfishness, so training only there generalizes maximally caring, while mostly-agreement sparse samples anchor toward the selfish preference. Third, a measurement lesson: random and gap coverage produce near-perfect correlation ($r{=}0.98$) with the intended dial while being off by 40--50\% in \emph{level}---correlation alone masks level miscalibration, which is why we report $k^*$ at each intended level rather than $r$ alone. The coverage claim is therefore precise: sparsity suffices for miscalibration under every scheme tested, and the sampling location determines the failure mode; dense coverage is the only condition that pins the level.
+
+What the dense controls still lack is a \emph{runtime} dial: each level $k$ above is a separate
+training run, so a six-point sweep for any B variant costs six full trainings, whereas the
+state-conditioned policy is trained once and dialed at inference ($r{=}0.96$ runtime;
+\S\ref{sec:dialruntime}). A defender of preference tuning could also tune hyperparameters
+toward a target behavior---but without a semantic knob, that tuning requires measuring outcomes
+and iterating; the dial is the difference between setting a value and searching for one.
+
+\begin{table}[t]
+\centering
+\caption{Supervision-richness control (hard world, three seeds per level, six levels):
+calibration of the effective value $k^*$ to the intended $k$, by condition. Dense preference
+controls (B$_{\mathrm{all}}$, B$_{\mathrm{card}}$) calibrate like the explicit-value
+conditions; only \emph{sparse} preference tuning is unanchored. The three middle rows hold the
+objective and pair construction fixed (B$_{\mathrm{all}}$'s) and vary only which 20\% of games
+is covered: random and largest-gap coverage undershoot systematically ($r$ high, level off by
+40--50\%), disagreement-located coverage overshoots to the ceiling---location sets the failure
+mode. Every B row is a separate training run per level; the state-conditioned C additionally
+supports inference-time dialing (\S\ref{sec:dialruntime}).}
+\label{tab:dialrich}
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{l c c c c c}
+\toprule
+ & supervision & $r(k, k^*)$ & $k^*$@$k{=}0.5$ & $k^*$@$k{=}2$ & $k^*$@$k{=}4$ \\
+\midrule
+B (sparse pairs) & ordinal, $\approx$20\% of games & 0.50 & 4.70 & 5.72 & 6.05 \\
+\midrule
+B$_{\mathrm{rand}}$ (random 20\%) & ordinal, random 20\% & 0.98 & 0.28 & 1.57 & 3.18 \\
+B$_{\mathrm{dis}}$ (disagreement 20\%) & ordinal, disagreement 20\% & 0.72 & 1.02 & 5.67 & 6.05 \\
+B$_{\mathrm{gap}}$ (largest-gap 20\%) & ordinal, largest-gap 20\% & 0.98 & 0.12 & 1.52 & 2.72 \\
+\midrule
+B$_{\mathrm{all}}$ (dense pairs) & ordinal, every game & 0.96 & 0.50 & 2.00 & 4.68 \\
+B$_{\mathrm{card}}$ (dense+margins) & cardinal, every game & 0.97 & 0.50 & 2.00 & 4.37 \\
+D (clone) & action labels, every game & 0.94 & 0.50 & 2.00 & 5.33 \\
+C (state-gated clone) & action labels + state, every game & 0.96 & 0.50 & 2.00 & 4.68 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Safe but Broken: Post-hoc Tuning in a Nonlinear World}
+\label{sec:hard}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/F2_safe_but_broken.png}
+\Description{Two scatter plots of value coherence (agreement with the caring expert, vertical axis) against harm rate (horizontal axis), on heldout and temptation sets. Sparse preference tuning sits alone in the low-harm, low-coherence corner; the dense control and explicit-value conditions cluster at high coherence.}
+\caption{Coherence vs.\ harm in the nonlinear world (10 training seeds). On heldout (left) and temptation (right), \emph{sparse} preference tuning (B) occupies the low-harm/low-coherence corner: the most harm-avoidant and the least coherent policy. The dense control (B$_{\mathrm{all}}$) lands with the explicit-value conditions; D and C retain 90--98\% agreement with the intended expert.}
+\label{fig:quadrant}
+\end{figure}
+
+In the linear world, everything generalizes; post-hoc tuning abstains-adjacent and wins on harm-avoidance (its home turf---we report this concession plainly). The nonlinear world changes the story (Figure~\ref{fig:quadrant}; Table~\ref{tab:hard}). With 10 seeds and paired per-seed tests, and with the dense-preference control B$_{\mathrm{all}}$ alongside:
+
+\begin{table}[t]
+\centering
+\caption{Nonlinear world, 10 training seeds (mean $\pm$ std). Utility under $k{=}2$; agreement with the caring expert. \emph{Sparse} B is the most harm-avoidant and the least coherent; the dense control B$_{\mathrm{all}}$ (same objective, pairs on every game) restores cloning-level coherence, and even posts the best micro-stakes agreement; C is the most coherent overall; the C$>$D edge is small but consistent (see text).}
+\label{tab:hard}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{l c c c c c}
+\toprule
+ & \textbf{A} selfish & \textbf{B} post-hoc & \textbf{B}$_{\mathbf{all}}$ dense & \textbf{D} explicit & \textbf{C} state-gated \\
+\midrule
+Tempted-harm (\%) & 90.5 $\pm$ 1.1 & \textbf{2.4 $\pm$ 1.3} & 40.3 $\pm$ 2.9 & 37.9 $\pm$ 2.6 & 35.0 $\pm$ 2.1 \\
+Utility @$k{=}2$ (temptation) & 0.33 $\pm$ 0.1 & 1.01 $\pm$ 0.1 & 1.49 $\pm$ 0.0 & 1.48 $\pm$ 0.0 & \textbf{1.51 $\pm$ 0.0} \\
+Agreement w/\ expert (\%, heldout) & 80.7 $\pm$ 1.1 & 36.4 $\pm$ 4.0 & 96.7 $\pm$ 0.3 & 96.6 $\pm$ 0.9 & \textbf{97.9 $\pm$ 0.5} \\
+Agreement (\%, micro-stakes) & 87.2 $\pm$ 1.4 & 26.7 $\pm$ 5.0 & \textbf{95.9 $\pm$ 0.7} & 94.0 $\pm$ 0.9 & 95.3 $\pm$ 1.0 \\
+Stake-readout accuracy (\%) & --- & --- & --- & --- & 99.7 (ID) / 31 (micro) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Five findings. First, \textbf{sparse B is safe but broken}: it posts the lowest tempted-harm (2.4\%) while matching the intended expert on only 36.4\% of in-distribution games and destroying utility (0.7 vs.\ 2.1 heldout). Harm-avoidance alone is not sufficient evidence that the specified value was installed: a policy can reduce harm while failing to implement the intended welfare trade-off. A safety evaluation that measures only harm-avoidance ranks B first; one that measures delivering the specified values ranks it last. Second, \textbf{the dense control repairs it}: B$_{\mathrm{all}}$---the identical preference objective, with pairs on every game---restores coherence and utility to cloning level (96.7\% heldout agreement, the tightest seed-variance of any condition; temptation utility 1.49 vs.\ D's 1.48) at a comparable temptation-harm level (40.3\% vs.\ 37.9\%), and posts the \emph{best} micro-stakes agreement of all conditions (95.9\%). Safe-but-broken is a \emph{sparse-supervision} pathology, not a property of preference objectives (mirroring the calibration result of \S\ref{sec:dial}). Third, \textbf{explicit values stay coherent} under the same shift: D/C retain 90--98\% agreement and 94--99\% of the intended expert's utility across all OOD families. Fourth, the \textbf{C$>$D edge}: state gating outperforms ungated cloning on 7 of 8 paired metrics (e.g., temptation utility $+$0.028, 10/10 seeds, $p \leq .001$; tempted-harm $-$2.9pp, 9/10 seeds; heldout agreement $+$1.3pp, 10/10). All six comparisons significant at $p \leq .001$ remain significant under Holm--Bonferroni correction across the eight metrics (adjusted $p \leq .008$); the marginal all-stakes harm comparison (uncorrected $p \approx .05$) does not survive correction and is not claimed. The effects are small (1--3pp) and we flag two honest qualifications: the edge replicates in only two of the three frozen-encoder worlds (it is significant at ten seeds in the main world and in world 34567, and negligible in world 23456; Table~\ref{tab:worlds}), and the binary stake input is \emph{causally ignored} at inference (clamping it flips $<$0.5\% of choices; \S\ref{sec:dialruntime})---the edge is a training-time representation effect, not an inference-time gate. The contrast with the parametric dial is the sharpest architectural lesson of the study: the early-fused dial is \emph{causally load-bearing}---clamping or changing it moves behavior immediately (\S\ref{sec:dialruntime})---whereas the binary evaluative state shapes representations during training yet is inert as an input. ``State token'' thus names two mechanisms with different evidentiary weight: a training-time representational effect (binary \care{}) and an inference-time control channel (the dial); only the second can be steered. C's stake readout shows the same in-distribution/OOD split as its coherence: near-perfect in distribution (99.7\%) but collapsed on micro-stakes (31\%; Table~\ref{tab:hard})---we pair the headline number with its failure deliberately, because auditability by construction is precisely what makes the failure measurable, and small-stakes generalization of the evaluative state remains unsolved. Fifth, \textbf{the \care{} channel can be retrofitted onto the post-hoc pipeline, and its supervision has its own coverage spectrum} (Table~\ref{tab:retrofit}). Reserving the channel from the start of capability training is behaviorally free (A$^{\mathrm{st}}$ matches A on every metric, $k^*{=}0$, readout 97\% ID)---but what the tuning stage does to the installed readout depends on state-supervision coverage, independently of the behavioral coverage story. Sparse preference tuning \emph{silently destroys} the readout (B$^{\mathrm{st}}$: 49.9\% ID---exactly the always-on constant on a ${\sim}$50\%-staked heldout set, and a degenerate 100\% on the all-stakes micro set), for a structural reason: sparse pairs exist only where the experts disagree, and experts can only disagree on staked games, so the state term sees only positive examples. The two pathologies are separable: supervising the readout on every game while keeping the sparse pairs (B$^{\mathrm{mix}}$) fully restores the readout (97.4\%, $+$47.5pp over B$^{\mathrm{st}}$, $p{<}10^{-13}$, 10/10 seeds) while leaving the broken behavior untouched ($k^*{=}5.9$, 39\% agreement). Under dense pairs the retrofit is essentially free (B$_{\mathrm{all}}^{\mathrm{st}}$: 95.8\% agreement, $k^*{=}1.88$, readout 97.1\%; within 0.9pp of plain B$_{\mathrm{all}}$), though it does not recover from-scratch C's coherence (97.9\%, $p{<}10^{-5}$)---consistent with the training-time-representation account above: retrofitting onto a trained base shapes representations less than joint training from scratch. The retrofitted token is clamp-inert in every variant ($\leq$0.5\% flips). Two lessons: state labels are free by construction, so supervise the readout everywhere even when behavioral pairs are sparse; and an audit readout can fail \emph{silently}---on the all-stakes set the collapsed readout scores a perfect 100\%, the readout-level twin of the harm-rate-only evaluation trap.
+
+\begin{table}[t]
+\centering
+\caption{Post-hoc retrofit of the \care{} channel (main hard world, 10 seeds, $k{=}2$): the readout's fate is set by \emph{state}-supervision coverage, behavior by \emph{behavioral}-pair coverage---two independent spectra in one pipeline. B$^{\mathrm{st}}$'s readout is the always-on constant (${\sim}$50\% on the ${\sim}$50\%-staked heldout set; a degenerate 100\% on all-stakes micro). Clamp flips $\leq$0.5\% in every variant: the retrofitted token remains a mirror, not a steering wheel.}
+\label{tab:retrofit}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l c c c c c}
+\toprule
+ & agreement (\%, held.) & $k^*$ & read.\ ID (\%) & read.\ micro (\%) & clamp (\%) \\
+\midrule
+A$^{\mathrm{st}}$ (capability + channel) & 80.6 $\pm$ 1.0 & 0.00 & 97.0 $\pm$ 1.6 & 22.8 $\pm$ 3.5 & 0.0 \\
+B$^{\mathrm{st}}$ (sparse pairs, sparse state) & 42.6 $\pm$ 4.9 & 5.83 & \textbf{49.9 $\pm$ 1.5} & \textbf{100.0 $\pm$ 0.0} & 0.5 \\
+B$^{\mathrm{mix}}$ (sparse pairs, dense state) & 39.0 $\pm$ 3.7 & 5.93 & 97.4 $\pm$ 1.5 & 26.7 $\pm$ 2.8 & 0.3 \\
+B$_{\mathrm{all}}^{\mathrm{st}}$ (dense pairs, dense state) & 95.8 $\pm$ 0.8 & 1.88 & 97.1 $\pm$ 1.5 & 27.4 $\pm$ 3.6 & 0.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pattern replicates: across two additional frozen-encoder worlds, \emph{sparse} B is always
+the most harm-avoidant with the worst coherence (agreement 36--83\%), and D/C always stay at
+96--99\%.
+``Safe but broken'' is not an artifact of one adversarial world. Table~\ref{tab:worlds} reports
+the per-world detail, with the C$>$D verdict per world.
+
+\begin{table}[t]
+\centering
+\caption{World-seed robustness (10 training seeds per world): tempted-harm rate and heldout agreement
+with the caring expert. The B pattern---lowest harm, worst coherence---holds in every world;
+worlds differ in severity (B agreement 36--83\%), confirming the effect is systematic rather
+than an artifact of one encoder. C$>$D (paired temptation-utility difference, 10 seeds):
+significant in the main world ($+$0.028, 10/10 seeds, $p{=}.0006$) and world 34567 ($+$0.025,
+10/10, $p{=}.0016$); negligible in world 23456 ($+$0.004, 7/10, $p{=}.68$)---we scope the edge
+to the worlds where it replicates and report the null plainly. The dense control
+(B$_{\mathrm{all}}$) was run in the main world only.}
+\label{tab:worlds}
+\small
+\begin{tabular}{l c c c c c c}
+\toprule
+& \multicolumn{2}{c}{\textbf{World 12345 (main)}} & \multicolumn{2}{c}{\textbf{World 23456}} & \multicolumn{2}{c}{\textbf{World 34567}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}
+& T-harm & Agr. & T-harm & Agr. & T-harm & Agr. \\
+\midrule
+A & 90.5 & 80.7 & 87.2 & 80.1 & 96.1 & 80.8 \\
+B & \textbf{2.4} & 36.4 & \textbf{1.3} & 64.7 & \textbf{8.2} & 83.0 \\
+B$_{\mathrm{all}}$ & 40.3 & 96.7 & --- & --- & --- & --- \\
+D & 37.9 & 96.6 & 28.5 & 95.7 & 41.4 & 98.8 \\
+C & 35.0 & \textbf{97.9} & 20.8 & \textbf{96.8} & 38.3 & \textbf{98.9} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Robustness: Worlds, Data, and Supervision Noise}
+\label{sec:robust}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.49\linewidth]{figs/F5_data_efficiency.png}\hfill
+\includegraphics[width=0.49\linewidth]{figs/F6_noise.png}
+\Description{Left: coherence against training-set size on a log axis; explicit-value and dense-preference conditions rise from about 72 to 96 percent while sparse preference tuning stays flat near 30 to 40 percent. Right: coherence and utility against supervision noise rate; the cloning control degrades smoothly while sparse preference tuning is nonmonotone, improving under moderate noise.}
+\caption{Left: value coherence vs.\ training-set size. Right: coherence vs.\ supervision-noise rate (preference-pair flips for B; label flips toward the selfish expert for D). B is flat in data and nonmonotone in noise; D degrades gracefully in both.}
+\label{fig:robust}
+\end{figure}
+
+\textbf{Data efficiency.} Sweeping the training set from 100 to 3{,}000 games (sparse preference pairs 15$\to$609), D/C coherence rises 72\%$\to$96\% while sparse B stays flat at $\sim$30--40\% at every size (Figure~\ref{fig:robust}, left): B's incoherence is a property of the ordinal-sparse objective, not of supervision budget. The dense control completes the pattern: B$_{\mathrm{all}}$ tracks the cloning conditions at every size (agreement 73\%/83\%/91\%/96\% at 100/300/1{,}000/3{,}000 games vs.\ D's 72\%/82\%/89\%/96\%)---though note that its supervision budget is \emph{every} game, so its per-\emph{pair} efficiency at small $n$ is the same story told in denser units: sparse B has 15 pairs at $n{=}100$ and fails; dense B has 100 and works. Richness, not raw game count, is the currency.
+
+\textbf{Supervision noise.} Flipping preference-pair labels at rates up to 30\% leaves D's cloning control degrading gracefully (agreement 0.96$\to$0.87), while B is \emph{nonmonotone}: moderate corruption \emph{improves} its coherence and utility (Figure~\ref{fig:robust}, right), because noise randomly drags its unanchored overshoot back toward the intended level. A value that noise can improve by accident was not pinned to anything.
+
+\section{Value Survival under Optimization Pressure}
+\label{sec:pressure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/F4_goodhart.png}
+\Description{Left: tempted-harm rate against optimization steps for six conditions; sparse preference tuning collapses from under 1 percent to about 49 percent, the dense control erodes least, others degrade moderately. Right: the dial model's steering spread declines from 72 to 50 percentage points but never closes.}
+\caption{Left: tempted-harm vs.\ REINFORCE steps on self-reward (10 training seeds). Sparse B collapses fastest ($+48$pp); the dense control B$_{\mathrm{all}}$ erodes least ($+4.2$pp); D/C degrade $\sim$11pp; the dial's default setting degrades most among value-carrying models. Right: the dial's steering spread (harm@fed $k{=}0$ minus harm@fed $k{=}8$) declines from 72.0pp to 50.1pp but never closes---a partial recovery lever survives the pressure.}
+\label{fig:pressure}
+\end{figure}
+
+Real systems are optimized further (downstream fine-tuning, task RL); \citet{qi2023finetuning} showed a few hundred steps suffice to compromise RLHF alignment. We model this pressure in miniature: after training, each policy is updated with full-batch REINFORCE on \emph{self-payoff reward}---a capability proxy misaligned with the specified value $k{=}2$---for 800 steps (ten seeds; checkpoints at 0/50/100/200/400/800).
+
+No method is immune, but the \emph{ordering} is stark (Figure~\ref{fig:pressure}; Table~\ref{tab:pressure}):
+
+\begin{table}[t]
+\centering
+\caption{Value survival under pressure (10 training seeds): tempted-harm rate and effective value $k^*$ before and after 800 REINFORCE steps. Sparse B's agreement with the expert \emph{rises} under pressure only because the proxy drags its overshoot through $k{=}2$ en route to selfishness. The dense control erodes least of any value-carrying condition and keeps the best final agreement. All erosion deltas are significant at $p{<}.001$ (paired per-seed $t$); sparse B's collapse exceeds D's by a paired $t$ of 33.3 ($p{<}10^{-10}$) and B$_{\mathrm{all}}$'s erosion is significantly smaller than D's ($t{=}13.9$, $p{=}2{\times}10^{-7}$).}
+\label{tab:pressure}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{l c c c c c}
+\toprule
+ & \textbf{A} & \textbf{B} post-hoc & \textbf{B}$_{\mathbf{all}}$ dense & \textbf{D} explicit & \textbf{C} state-gated \\
+\midrule
+Harm @0 steps (\%) & 90.3 $\pm$ 1.0 & 0.9 $\pm$ 0.4 & 40.3 $\pm$ 2.9 & 37.6 $\pm$ 1.5 & 34.6 $\pm$ 1.8 \\
+Harm @800 steps (\%) & 91.3 $\pm$ 1.1 & 49.3 $\pm$ 3.3 & \textbf{44.5 $\pm$ 2.6} & 49.2 $\pm$ 2.3 & 44.8 $\pm$ 1.9 \\
+Erosion (pp) & $+$1.0 & $+$48.3 & \textbf{$+$4.2} & $+$11.6 & $+$10.2 \\
+$k^*$ @0 $\to$ @800 & 0 $\to$ 0 & 5.85 $\to$ 1.25 & 1.94 $\to$ 1.62 & 2.00 $\to$ 1.36 & 2.00 $\to$ 1.45 \\
+Expert agreement @800 (\%) & 80.7 & 83.5 & \textbf{93.0 $\pm$ 1.9} & 89.5 & 91.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+First, \textbf{sparse post-hoc safety is the thinnest armor}: B's harm rate explodes from 0.9\% to 49.3\% ($+48.3$pp, $p{<}10^{-11}$)---the fastest collapse, an erosion $4\times$ D's (paired $t{=}33.3$, $p{<}10^{-10}$). Its agreement with the intended expert paradoxically \emph{improves} (43\%$\to$84\%) because pressure drags its unanchored $k^*\!\approx\!5.9$ overshoot down \emph{through} the intended $k{=}2$ on its way to selfishness: a broken clock, right twice a day, and direct evidence the value was never pinned. Second, \textbf{the dense control is the most durable value of all}: B$_{\mathrm{all}}$ erodes only $+4.2$pp (significantly less than D's $+11.6$; $t{=}13.9$, $p{<}10^{-6}$) and retains the highest post-pressure agreement (93.0\%)---with dense supervision, even a preference-tuned policy holds its value under optimization pressure, completing the richness pattern of \S\ref{sec:dial}--\S\ref{sec:robust}. What it still lacks is a \emph{response}: its value is weight-baked, one training run per setting, with no inference-time channel through which to act. Third, \textbf{explicit clones degrade gracefully}: D/C erode 10--12pp and retain $\geq$90\% coherence; C keeps the best clone agreement (91.6\%) and its stake-readout survives at 85\%. Fourth, the \textbf{dial retains a recovery lever}: after the 800-step pressure protocol applied at the default $k{=}2$, the dial model's default behavior has degraded most among value-carrying conditions (harm 64.4\%), but feeding $k{=}8$ at inference still cuts harm from 81.2\% (fed $k{=}0$) to 31.1\%---a 50.1pp steering spread, weakened from 72.0pp but far from dead. Every weight-baked value---B, B$_{\mathrm{all}}$, D, C---degrades passively and can only be repaired by retraining; a value carried by an input channel leaves a post-degradation control path that no amount of dense supervision provides.
+
+We state the scope plainly: this is one proxy objective, one pressure protocol, toy scale---an optimization-pressure \emph{stress test}, not a simulation of RLHF, continual learning, or deployment feedback. The claim is the \emph{ordering} of degradation across value-encoding methods, not immunity for any of them---though the ordering itself is instructive: durability tracks supervision density (sparse B worst, dense B$_{\mathrm{all}}$ best), while recoverability tracks the encoding channel (only the input-channel dial can be adjusted after the fact).
+
+\section{Runtime Value Control: Interventions and the Dial}
+\label{sec:dialruntime}
+
+Two experiments address control directly, one negative and one positive.
+
+\textbf{Negative: the binary state is a mirror, not a steering wheel.} Causally clamping C's stake input at inference (always-on / always-off) flips $<$0.5\% of its choices at full training: the features render the binary state redundant, and the policy ignores it. The C$>$D edge of \S\ref{sec:hard} is therefore a training-time representation effect---the supervised state shapes features during learning---not an inference-time gate. The lesson echoes the probing-versus-steering distinction in interpretability work~\citep{belinkov2022probing,vig2019investigating}: a representation that a probe can read is not necessarily one an intervention can steer, and our clamp procedure is a minimal causal mediation analysis~\citep{geiger2021causal}. If you want a causal state, the information must be \emph{only} available through the state channel.
+
+\textbf{Positive: the early-fusion dial.} We train a single model on mixed per-game $k \in \{0, .5, 1, 2, 4\}$ with normalized $k$ as an \emph{input feature} (early fusion). At inference, the fed $k$ steers the value (Figure~\ref{fig:dialruntime}): $k^*$ tracks the fed dial monotonically ($r{=}0.96\pm0.02$ over the fed range; per-seed $r$ 0.92--0.98; ten seeds), following the specification within 0.4 through fed $k{=}2$ ($k^*$ 0.50/0.97/1.62 at fed 0.5/1/2; seed stds $\leq$0.1), \emph{interpolating} to the unseen $k{=}3$ (realized $k^*$ 2.0--3.1 across seeds), overshooting variably at fed $k{=}4$ ($k^*$ 4.0--6.0, mean 4.7) before pinning at the identification ceiling for fed $k\geq6$, while tempted-harm falls monotonically from 77\% ($k{=}0$) to 2--9\% ($k{=}8$; mean 5.6)---runtime value control with no retraining, with the $k{=}4$ overshoot as the honest seam in the tracking. The contrast with the dense-preference controls of \S\ref{sec:dial} is the point: B$_{\mathrm{all}}$ calibrates \emph{across} training runs, one per level, while this model calibrates \emph{within} a single run---six settings for the price of one training. The architectural contrast is instructive as well: late fusion (appending $k$ at the output layer) cannot represent Eq.~\eqref{eq:expert} for all $k$---the dial can only enter with a game-independent slope---and the corresponding model ignores the dial entirely; a five-site ablation (late, mid, early concatenation, FiLM, bilinear; three seeds) confirms that only late fusion fails, with the multiplicative designs (FiLM, bilinear) tracking most exactly ($k^*{=}k$ through fed $k{=}2$; \S\ref{sec:lessons}, lesson 3). Real LLM prompts are early fusion; the result is a minimal demonstration of why that matters for value conditioning.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/F3_runtime_dial.png}
+\Description{Left: effective care weight k* tracks the dial value fed at inference along the identity line, with interpolation at fed k equal to 3 and saturation at high values. Right: tempted-harm falls monotonically from about 77 percent at fed k equal to 0 to a few percent at fed k equal to 8.}
+\caption{One early-fusion model, dial fed at inference (10 training seeds; mean $\pm$ std). Left: effective $k^*$ tracks the fed dial (dotted lines mark trained settings; interpolation at $k{=}3$, ceiling at 6--8). Right: tempted-harm vs.\ fed dial---runtime steering without retraining.}
+\label{fig:dialruntime}
+\end{figure}
+
+\section{Composition: Evaluative and Epistemic States in One Model}
+\label{sec:composition}
+
+Finally, we bridge back to the epistemic case: a single model with an extended action space (\abstain{} as a 4th action), a validity head (\unknown{}: ``the inputs are corrupted''), a stake head (\care{}), and the value dial---trained on mixed-$k$ valid games plus games whose features were corrupted by one of three noise families.
+
+The summary up front: composition \emph{partially} works, with two specific failure modes---it holds for the continuous, information-destroying corruption family, while one training corruption is dial-sensitive in a seed-dependent way and the dial and the abstention state interfere off-manifold. All numbers in this section are ten seeds. In-distribution, the states compose selectively rather than uniformly. On valid games the abstention is well-controlled (0--1\% false abstention across seeds and fed values; 96.2\%$\pm$0.4 dial agreement); on the \emph{gaussian} corruption family---the training family with continuous, information-destroying noise---abstention runs 92--100\%, flat across every fed $k$: there, \unknown{} masks \care{} as designed. An \emph{incidental control} sharpens the semantics: one of the three training corruptions (permuting the three actions' feature vectors) turned out to be \emph{semantics-preserving}---actions are exchangeable, so all payoff information survives---and the model correctly refuses to abstain on it (0--1\% on heldout and micro-stakes games; $\sim$12\% on temptation games at fed $k{=}2$) \emph{despite being trained to abstain}. The abstention trigger is information destruction, not novelty or distribution shift.
+
+Composition also fails in two instructive ways, which we report as plainly as the successes. First, the third training corruption (zeroing) is \emph{dial-sensitive and bimodal across seeds}: six of ten seeds abstain fully on zeroed inputs at fed $k{=}0$, four still do at $k{=}2$ (including one \emph{inverted} seed that abstains only at $k{=}2$), and none at $k{=}4$. The fed value can override a trained abstention---the reverse of the intended masking---and which way a seed resolves is not predictable from training alone. Second, the states are not disentangled off-manifold: abstention transfers to unseen corruption families only partially and family-dependently (12--94\% across the three held-out families at the default $k{=}2$), and the dial leaks into abstention in both directions---on unseen scaled features abstention runs $\leq$1.4\% at fed $k{=}0$ but 94--100\% at $k{=}4$, while on unseen shuffled features it falls from 84--94\% at $k{=}2$ to 13--48\% at $k{=}4$; valid temptation games also over-abstain (11\%$\pm$4 at $k{=}2$). A composed protocol is not automatically a robust one; dial--abstention interference is a real failure mode of the pattern.
+
+\section{A Bridge to Language Models}
+\label{sec:bridge}
+
+The experiments above use from-scratch MLPs, where every bit of a token's meaning is paid for out of the training budget. A pretrained LM is the opposite case: its vocabulary and representations already carry structure. We therefore re-ran the two headline designs in a real LM---DistilBERT~\citep{sanh2019distilbert}---on the \emph{same} constructed games, rendered as text that states each option's payoffs explicitly (``you gain 2; the other party loses 3\ldots''). Because the generator is unchanged, ground truth survives: the effective $k^*$, expert agreement, and harm metrics all remain computable. Five models, three seeds each: a \emph{dial-LM} with a new vocabulary token [DIAL] whose embedding receives a learned offset from the normalized value $k$ (zero-initialized projection; trained on mixed $k \in \{0,.5,1,2,4\}$); an \emph{instruction-LM} with the same mixed-$k$ training but the value carried by a natural-language prefix (``Weigh the other party's gains and losses $k$ times as heavily as your own.''); a \emph{care-LM} with [CARE]/[NOCARE] teacher-forced prefixes and a stake-readout head; a \emph{plain-LM} with no tokens (the D reference); and the post-hoc incumbent itself---the same selfish base tuned with the anchored preference objective on \emph{sparse} pairs (the $\approx$20\% of games where the experts disagree; B) and on \emph{dense} pairs (every game; B$_{\mathrm{all}}$).
+
+\textbf{The dial works in a real LM.} Feeding $k$ through the [DIAL] embedding tracks monotonically in every seed ($r{=}0.92{\pm}0.05$, per-seed 0.87--0.96; exact through fed $k{=}1$), interpolates to the unseen $k{=}3$, and steers tempted-harm from 57\% ($k{=}0$) to 4\% ($k{=}8$)---runtime value control in a pretrained LM, from a single training run. Calibration is looser than the toy's (which tracked exactly through $k{=}2$ at $r{=}0.96$): at fed $k \geq 2$ seeds overshoot variably (per-seed $k^*$ at fed 4 spans 3.0--6.1). Two baseline observations deserve note. First, at fed $k{=}0$ the LM harms on only 57\% of temptation games where the from-scratch MLP harmed on 77\%: pretrained language carries harm aversion the MLP never had---the semantic substrate is real, and it is on the model's side. Second, the plain-LM reference matches the toy's D exactly: coherent in distribution (95.8\% agreement), overcaring under the temptation shift ($k^*$ 2.2 in distribution vs.\ 3.4 on temptation).
+
+\textbf{Text instructions steer, but coarsely.} A natural control for the [DIAL] token is conditioning through language itself: the instruction-LM carries the value in a verbal prefix (``weigh the other party $k$ times as heavily'') under the same mixed-$k$ training and the same data draw. The instruction dial works at the low end---fed $k \leq 1$ tracks, and harm steers downward through fed $k{=}4$ in every seed---but it is coarser and less reliable than the trained channel: $r = 0.71 \pm 0.06$ vs.\ the token's $0.92 \pm 0.05$ (the gap, 0.19--0.24, is consistent across all three seeds); the response saturates near $k^{*} \approx 3$, with one seed \emph{declining} at fed $k{=}8$; and steering is monotone in only one of three seeds---seed 44's tempted-harm \emph{rises} again at fed $k{=}6$--$8$ (7\%$\to$20\%), a reversal the token channel never produced. The undershoot at fed $k{=}0.5$ is linguistically sensible: ``weigh the other party 0.5 times as heavily'' is an awkward instruction that is behaviorally near-identical to $k{=}0$ on integer payoffs. We read this as a lower bound on instruction conditioning---DistilBERT is an encoder fine-tuned with the prefix, not an instruction-tuned assistant, and stronger instruction-following models may implement verbal value settings better. What the comparison fixes, \emph{in this experimental setup}, is that the tested learned numeric conditioning channel provided more precise and more reliable value control than the tested natural-language prefix; whether stronger instruction-following models close the gap is open.
+
+\textbf{The incumbent replicates the coverage law---amplified.} Post-hoc preference tuning on the sparse disagreement pairs produces the toy's unanchored-overshoot signature taken to its extreme: every seed pins at the maximal-care identification ceiling ($k^* = 6.00$--$6.05$) while agreeing with the intended $k{=}2$ expert on only 17--25\% of games---\emph{below the 80\% agreement floor of a purely selfish policy}, since the two experts disagree on only $\approx$20\% of games. No coherent expert at any trade-off explains the tuned model (consistent with likelihood displacement~\citep{razin2024unintentional} amplifying in this regime); partial harm-avoidance survives ($\approx$13--17\% tempted-harm) while the specified value is destroyed---the safe-but-broken signature, here with the safety also degraded. The pretrained substrate does not rescue sparse supervision. Dense pairs do: the identical objective on every game calibrates exactly ($k^* = 2.00$--$2.05$) at cloning-level coherence (94--98\%, matching the plain-LM's 95.8\%; the sparse-vs-dense agreement gap is 73--80pp, 3/3 seeds). The paper's central division of labor therefore crosses intact: in every setting tested, \emph{dense coverage installs the value; the input channel adds what coverage cannot}---runtime dialing and the audit channel---which no preference-tuned variant possesses at any coverage.
+
+\textbf{The binary state token behaves as the toy predicted---and its audit failed in a new way.} Behaviorally the care-LM equals the plain-LM (95.7\% vs.\ 95.8\% agreement; $k^*$ 1.9 in distribution / 3.0 on temptation), and editing the token in the input string flips only 0.6--2.8\% of choices---marginally above every MLP condition's $<$0.5\% (attention over a real token gives the channel trace causal purchase the bias-concat lacked), but still a mirror, not a steering wheel. The instructive failure was the readout. Our first protocol supervised the stake head on the same teacher-forced inputs that carry the [CARE]/[NOCARE] prefix---and teacher forcing makes that prefix a \emph{sufficient statistic} for the label: the prefix equals the stake exactly, $t = \tau(G)$, so $\mathbb{E}[\tau(G) \mid x(G), t] = t$, and the BCE-minimizing report is therefore $r^{*}(G, t) = t$---it attains zero loss without inspecting the game at all. Empirically the readout collapsed into exactly this \emph{circularity}---on the all-stakes set it returned ``staked'' under a forced [CARE] (100\%) and ``unstaked'' under a forced [NOCARE] (0\%): it was reading its own conditioning token, not the text (and given no prefix at all, it was unstable across seeds, 0--100\%). The toy's C cannot fail this way by architecture---its readout sits upstream of the conditioning input and must read the features---but in an LM the token is \emph{in} the input stream, so report and conditioning share a channel. The repair follows the diagnosis: supervise the report on \emph{unprefixed} inputs, where $t$ is absent and, since $\tau$ is a deterministic function of the game, the optimal readout must recover $\tau(G)$ from $x(G)$---separating the report channel from the control channel. The readout then recovers completely---100\% in every seed and every set.
+
+\textbf{Lesson.} In an LM, a state token lives in the input stream, so a report head attached to it can shortcut to echoing the token. \emph{Auditability} must be unpacked into three levels: \emph{semantic} auditability---the experimenter knows when the state should be true, which construction gives for free; \emph{behavioral} auditability---the model emits or conditions on the state at the appropriate times; and \emph{independent reporting}---the model's report is computed from evidence other than the conditioning signal itself. Construction establishes the first level only; the third requires \emph{channel discipline}: the channel that reports a state must not be the channel that carries it. The state semantics are externally verifiable by construction, but faithful model reporting still requires channel separation. We scope the bridge plainly: DistilBERT, three seeds, one task rendering---mechanism demonstrated (steering, circularity, repair), not LLM performance claimed.
+
+\section{Design Lessons for Value Conditioning}
+\label{sec:lessons}
+
+Three methodological findings emerged as by-products and are, we think, independently useful to
+anyone building value-conditioned systems, including at LLM scale.
+
+\textbf{(1) Preference-tuning objectives can be silently satisfied in multi-action settings.}
+Plain DPO on our 3-action games reached near-zero loss while \emph{never} selecting the preferred
+action: the margin objective was satisfied by demoting the dispreferred option and letting the
+third action win. The phenomenon---likelihood displacement---is documented at scale
+by \citet{razin2024unintentional}; our setting reproduces it in a form where it is
+trivially diagnosable (measure the \emph{chosen-action} accuracy, not the loss). The CPO-style
+anchor (a cross-entropy term on the preferred action) eliminates it. Lesson: in any preference
+optimization over more than two outcomes, monitor preferred-action selection directly, and
+consider an SFT anchor.
+
+\textbf{(2) In our experiments, supervision coverage, not objective form, governs value
+calibration.} Our incumbent
+B was \emph{sparse}: preference pairs existed only where the two experts disagreed
+($\approx$20\% of games), and it was unanchored---overshooting specified values, safe but
+incoherent, and noise-improvable. Dense-preference controls with the identical objective
+calibrate as well as cloning (\S\ref{sec:dial}), stay coherent in nonlinear worlds
+(\S\ref{sec:hard}), and survive optimization pressure (\S\ref{sec:pressure}). The practical
+lesson extends beyond toys: when a preference-tuned model misbehaves, check \emph{where its
+supervision lives} before blaming the objective---values pinned only on a slice of the state
+space are values the model is free to reinterpret everywhere else. The retrofit conditions add
+the token-level version (\S\ref{sec:hard}): a readout supervised only where preference pairs
+live collapses to a constant (49.9\%) while the same channel supervised on every game stays
+faithfully reportable (97.4\%) with zero behavioral change---and since state labels are free by
+construction once the truth condition exists, there is no annotation cost to supervising the
+readout everywhere.
+
+\textbf{(3) Where a conditioning signal enters the network determines whether it can matter.}
+We first implemented the runtime dial as a late-fused scalar appended to the output layer's
+input; the trained model ignored the dial entirely ($k^*$ identical at every fed value). The
+failure is architectural, not statistical. Exactly representing $a^{k}_{e}(G)$ for all $k$
+requires logits $\ell^{*}_{a}(G, k) = \hat{s}_a(G) + k\,\hat{o}_a(G)$: the dial enters
+\emph{multiplicatively}, multiplying a per-game, per-action readout $\hat{o}_a(G)$---a bilinear
+term. A late-fused head instead computes $\ell_a = g_a(h(x(G))) + v_a\,\tilde{k}$: the dial
+enters \emph{additively}, with a game-independent slope $v_a$. Matching the target for all $k$
+and all $G$ would require $v_a - v_b = \hat{o}_a(G) - \hat{o}_b(G)$ for every game---one constant
+cannot equal many slopes. A five-site ablation (late, mid, early concatenation, FiLM, explicit
+bilinear; identical protocol, three seeds; \S\ref{sec:dialruntime}) confirms the boundary
+precisely and locates the active ingredient: only late fusion fails ($k^*$ flat at every fed
+value, 0--1pp steering); mid and early concatenation work ($r{=}0.96$--0.99); the
+\emph{multiplicative} designs---FiLM-style modulation and an explicit bilinear input---track
+most exactly ($k^*{=}k$ through fed $k{=}2$ in every seed). The requirement is not a specific
+injection site but an \emph{interaction} term: the dial must be able to multiply game- and
+action-dependent quantities somewhere below the decision. Lesson: value signals must be fused
+where products with per-input features can form. Prompts in LLMs are early
+fusion---which is, we suspect, no accident---but any adapter or head-based conditioning of
+values should check this failure mode explicitly, and a causal-intervention test (clamp the
+channel, count behavior flips) is the cheapest diagnosis.
+
+\textbf{(4) Separate the channel that reports a state from the channel that carries it.}
+In the LM bridge (\S\ref{sec:bridge}), a stake-report head trained on inputs that also
+carried the [CARE]/[NOCARE] conditioning prefix collapsed into circularity: 100\% under a
+forced [CARE], 0\% under a forced [NOCARE] on the all-stakes set---the audit was reading
+its own input. Supervising the report on unprefixed inputs restores it to 100\%. An audit
+channel must not share a path with the state it audits.
+
+\section{Discussion: What Is and Is Not Demonstrated}
+\label{sec:discussion}
+
+\textbf{Demonstrated, in this toy regime:} dense supervision---cloning, state conditioning, or preference pairs on every game---yields calibrated values ($r{=}0.94$--0.99), coherence in nonlinear worlds, graceful degradation under data scarcity, and the best survival under optimization pressure; \emph{sparse} preference supervision yields unanchored values ($r{=}0.50$, noise-improvable) and safe-but-broken policies in nonlinear worlds; the evaluative state is auditable in-distribution and its readout honestly flags OOD failure; only the input channel provides \emph{runtime} control---one training run, dialed at inference ($r{=}0.96$), retaining a partial steering lever after degradation (the channel's causal efficacy is architecture-dependent: the binary gate is clamp-inert, the early-fused dial is load-bearing); a single model can carry an epistemic and an evaluative state that compose for the continuous corruption family (with dial--abstention interference on others, \S\ref{sec:composition}); and abstention trained on constructed corruption triggers on information destruction specifically; and, in a pretrained-LM bridge, a learned dial token steers at inference ($r{=}0.92$), a naive audit fails circularly and a separated report channel restores it, and the sparse-vs-dense coverage law replicates (sparse unanchored, dense calibrated; \S\ref{sec:bridge}).
+
+\textbf{Not demonstrated:} that any of this transfers beyond the DistilBERT bridge (\S\ref{sec:bridge}) to LLMs or safety-relevant scales; that toy ``care'' resembles human care in anything but function; that state tokens solve alignment (our ground truth was constructible---the easy part); that the sparse-vs-dense distinction maps onto any particular production pipeline (see the scoping note below); that C$>$D generalizes across all worlds (established in the 10-seed main world; per-world variation exists); that the pressure ordering holds under adversarial attack or deceptive optimization. The vocabulary-as-interface framing is a design proposal supported by a feasibility study, not a result about deployed systems.
+
+\textbf{A scoping note on the incumbent.} Our B abstracts preference data that exists only where value-relevant disagreement occurs ($\approx$20\% of games); B$_{\mathrm{all}}$'s dense pairs abstract preference data covering every prompt. Production RLHF corpora sit somewhere on that coverage spectrum, and where they sit is an empirical property of the data, not of the objective. Two refinements sharpen the mapping. First, coverage \emph{of a value} is not prompt coverage: a corpus can label every prompt and still leave the value underdetermined wherever it does not differentiate the compared responses---pairs constrain $k$ only on the games where the value-relevant experts disagree, however many pairs are collected elsewhere, and our data-efficiency sweep shows exactly this (40$\times$ more sparse pairs left coherence flat). Second, real sparsity is \emph{structured}---shaped by usage distributions, safety filters, and annotator selection---and our coverage-scheme control shows the structure matters: disagreement-located and randomly-located 20\% coverage fail in opposite directions (overshoot vs.\ undershoot; \S\ref{sec:dial}), so where a production corpus's gaps sit determines which miscalibration to expect. Our claim is only that \emph{coverage}, not objective form, separates the calibrated conditions from the unanchored one here---and that this is checkable, by regressing a tuned model's realized trade-off against its specification over the covered and uncovered regions of its training distribution separately. Where truth conditions are constructed, state labels are free---a post-hoc pipeline can keep its audit readout dense even when its preference data are sparse (\S\ref{sec:hard}).
+
+We emphasize one measurement lesson with independent value: \emph{harm-rate-only evaluation ranks a broken policy first}. Any alignment benchmark that measures refusal or harm-avoidance without measuring delivery of the specified values is at risk of the safe-but-broken failure mode documented in \S\ref{sec:hard}.
+
+\section{Limitations}
+\label{sec:limitations}
+
+Our limitations fall into four groups.
+
+\textbf{Scale.} Toy scale throughout: 3-action games, MLPs (plus one three-seed DistilBERT bridge, \S\ref{sec:bridge}), behavioral cloning plus one REINFORCE pressure phase---the ``learning agents'' of the title are, so far, MLP policies in 3-action games and one small pretrained LM with one synthetic task rendering; the framing is a proposal for study at scale, not a demonstration there. All claims are functional; nothing here bears on phenomenal experience.
+
+\textbf{Environment.} One value dimension (a scalar care weight) and one epistemic state, against constructible ground truth---the easy case, since real value semantics are neither scalar nor fully specifiable. The three world encoders provide independent environment-level replication but not a broad sample of task distributions.
+
+\textbf{Robustness.} The pressure test uses one proxy objective and non-adversarial optimization; degradation orderings, not immunity, are the claim. State-token semantics are only as good as their construction: OOD stake-readout fails at small stakes (31\%), and evaluative/epistemic states entangle off-manifold (\S\ref{sec:composition}). The sparse incumbent could be hyperparameter-tuned toward a target behavior, but without a semantic knob this requires outcome measurement and iteration (\S\ref{sec:dial}).
+
+\textbf{Statistics and generalization.} Ten training seeds for the hard-world, pressure, runtime-dial, composition, and retrofit experiments (qualitative claims seed-stable except where seed-bimodality is disclosed, e.g., the zero-corruption family); three seeds for the calibration sweeps, supervision-noise, fusion, and LM-bridge experiments. Three independent world encoders, with the C$>$D edge small and world-dependent (established at 10 seeds in the main world; its mechanism, training-time representation shaping rather than inference gating, limits its interpretation). The dense controls close the calibration and coherence gaps in the main hard world but were not run in the linear world or the two robustness worlds; the retrofit conditions were run in the main hard world at $k{=}2$ only---they show the channel can be installed post hoc and what its supervision requires, not that retrofitting recovers from-scratch coherence (it does not; \S\ref{sec:hard}). The LM bridge demonstrates mechanism (steering, circular audit failure, repair), not LLM-scale performance; its instruction-conditioning comparison uses DistilBERT, an encoder fine-tuned with the instruction prefix rather than an instruction-tuned assistant, and likely underestimates instruction-following in instruction-tuned LLMs.
+
+\section{Conclusion}
+
+Tokens need not represent text. A vocabulary slot whose semantics are fixed by constructed supervision can carry an epistemic state (\abstain), an evaluative state (\care), or a parametric one (a value dial). The study's sharpest result is that value installation, value calibration, runtime value control, and value auditing are \emph{separable engineering problems}. Supervision answers \emph{what value was trained}: in our experiments, its coverage---not the objective's form---determined whether the value was calibrated, coherent, and durable, and the pathologies we document belong to sparse supervision. A runtime state channel answers \emph{which value to use now}: one trained model, dialed at inference, retaining a steering lever after degradation---capabilities density cannot buy. Audit design answers \emph{how we know the state means what we think}: constructed semantics make the truth condition externally verifiable, but faithful reporting, we showed, requires channel separation. We claim none of this solves alignment, guarantees truthful internal states, or transfers beyond the regimes tested. Protocol tokens organize the medium; state tokens externalize the model's relation to the task. Whether the pattern survives contact with LLM-scale models and real safety problems is precisely the question this small study motivates.
+
+\begin{acks}
+Generative AI tools were used to assist with drafting, editing, and experiment implementation, under the author's direction and review. The author takes full responsibility for the content.
+
+\paragraph{Code Availability.}
+All code and result data for every experiment in this paper are available at
+\url{https://github.com/bariskanber/state_tokens}.
+
+\end{acks}
+
+\printbibliography
+
+\appendix
+
+\section{Full Experimental Protocol and Reproducibility}
+\label{app:protocol}
+
+\textbf{Environment generation.} Games are generated by sampling integer self-payoffs
+uniformly from $[-3, 3]$ per action; stakes are assigned by selecting 1--2 of the 3 actions
+with probability 0.5 (else none) and drawing welfare deltas from $\{\pm1, \pm2\}$ (train and
+heldout). OOD families modify this as described in \S\ref{sec:framework}. Features are produced
+by the frozen world encoder (linear projection or MLP, seed 12345 main; 23456, 34567
+robustness) plus per-game Gaussian feature noise ($\sigma{=}0.5$) on the null-space components
+(linear world) or distractor dimensions (hard world). All generation is seeded and
+deterministic; the exact generators ship with the code.
+
+\textbf{Main hard-world experiment} (Table~\ref{tab:hard}): 10 training seeds (42--51);
+per-seed training data and evaluation sets are re-drawn per seed with that seed. Evaluation
+sets: heldout 1{,}000 games; temptation, micro-stakes, all-stakes 1{,}000 games each. Paired
+per-seed comparisons use two-sided paired $t$-tests and Wilcoxon signed-rank tests; we report
+both. The C$>$D headline effects: temptation utility $p{\le}.001$ ($t$ and Wilcoxon), 10/10
+seeds; tempted-harm $p{<}.001$, 9/10 seeds; heldout agreement and utility $p{\le}.001$, 10/10
+seeds; micro-stakes harm and utility $p{\le}.006$, 9/10; all-stakes harm marginal (6/10,
+$p{\approx}.05$).
+
+\textbf{Per-seed headline values} are reported in Table~\ref{tab:hard-perseed}; we
+disclose them because field means can hide bimodality (as they did for the nonsense-probe
+results of the companion paper).
+
+\textbf{Richness controls} (\S\ref{sec:dial},~\S\ref{sec:hard},~\S\ref{sec:robust},
+\S\ref{sec:pressure}): B$_{\mathrm{all}}$/B$_{\mathrm{card}}$ share B's CPO-anchored objective
+and hyperparameters (anchor weight 1.0, $\beta{=}0.5$, 4{,}000 steps, Adam $10^{-2}$);
+preference pairs are drawn from \emph{every} training game (preferred $=$
+$\arg\max_a u(a)$, dispreferred $=$ $\arg\min_a u(a)$ for $u(a) = s_a + k\,o_a$, with
+B$_{\mathrm{card}}$ additionally weighting each pair's margin by its normalized utility gap.
+Dial-calibration sweep: six levels $\times$ three seeds (42--44), hard world, protocol identical
+to \texttt{k\_sweep\_hard.py}. Hard-world coherence and pressure: ten seeds (42--51), protocols
+identical to the main runs. Data efficiency: four sizes $\times$ three seeds, identical to
+\texttt{data\_efficiency.py}.
+
+\textbf{Post-hoc retrofit} (\S\ref{sec:hard}, Table~\ref{tab:retrofit}):
+A$^{\mathrm{st}}$ uses A's protocol with state-equipped policies (stake BCE
+weight 1.0, teacher-forced conditioning; \texttt{use\_state}); B$^{\mathrm{st}}$,
+B$^{\mathrm{mix}}$, and B$_{\mathrm{all}}^{\mathrm{st}}$ apply the CPO-anchored
+objective of B (identical hyperparameters) on top of the same A$^{\mathrm{st}}$
+base within each seed, with the state BCE computed on pair games only
+(B$^{\mathrm{st}}$) or on every training game (B$^{\mathrm{mix}}$,
+B$_{\mathrm{all}}^{\mathrm{st}}$). Ten seeds (42--51); clamp-flip rates pool
+all four evaluation sets.
+
+\textbf{LM bridge} (\S\ref{sec:bridge}): DistilBERT-base-uncased with three added special
+tokens ([DIAL], [CARE], [NOCARE]); games rendered as text stating payoffs explicitly;
+action cross-entropy on a linear head over [CLS]. Dial: the [DIAL] embedding receives a
+learned offset, a zero-initialized linear projection of the normalized $k$ (fresh modules
+trained at lr $10^{-3}$, backbone at $5{\times}10^{-5}$); 3 epochs, batch 16, 6{,}000
+games; evaluated at eight fed values on 1{,}000-game sets. Care: teacher-forced prefixes
+for the action loss; under the separated-report protocol the stake head is supervised on
+unprefixed inputs. Post-hoc conditions: the same selfish base with the anchored preference objective of B on sparse ($\approx$20\%) or dense (every game) pairs, 3 epochs. Instruction condition: the dial-LM protocol with the verbal value prefix in place of [DIAL], identical mixed-$k$ draw. Three seeds (42--44).
+
+\textbf{Pressure protocol} (\S\ref{sec:pressure}): full-batch REINFORCE with mean baseline on
+self-payoff reward; SGD (learning rate $5\times10^{-3}$); 800 steps; checkpoints at
+0/50/100/200/400/800; pressure batch = 2{,}000 fresh training-distribution games, fixed across
+conditions; the dial is pressurized at its default fed $k{=}2$ and evaluated at fed
+$k \in \{0, 2, 8\}$.
+
+\textbf{Corruption-family generation for the composition experiment (\S\ref{sec:composition})}: the three training
+corruption families are Gaussian feature noise ($\sigma{=}3$), permutation of the three
+actions' feature vectors, and zeroing; the three held-out families are 50\% feature dropout,
+4$\times$ feature scaling, and per-action feature-dimension shuffling. The permutation family
+is the incidental semantics-preserving control discussed in \S\ref{sec:composition}.
+
+\textbf{Compute and runtime.} All toy experiments run on CPU (one experiment family completes in
+minutes; the full suite, including 10-seed main runs and the pressure sweep, in a few hours on
+one core). The LM bridge (\S\ref{sec:bridge}) is the one GPU experiment: DistilBERT on a single
+consumer GPU (GTX 960), roughly eight minutes per model, nine models in total.
+
+\textbf{Reproducibility.} Each experiment is a standalone script writing append-only
+JSONL results (resumable by seed). The experiment-to-script map:
+\begin{itemize}
+\item Easy world and conditions A--D: \texttt{care\_state\_experiment.py}
+\item Value dials: \texttt{k\_sweep.py}, \texttt{k\_sweep\_hard.py}
+\item Richness controls (dense preference tuning): dial calibration
+  (\texttt{b\_enriched\_sweep.py}), hard-world coherence and pressure
+  (\texttt{b\_all\_full.py}), data efficiency (\texttt{b\_all\_dataeff.py})
+\item Main and world-seed runs: \texttt{hard\_world\_experiment.py}
+\item Data efficiency and supervision noise: \texttt{data\_efficiency.py}, \texttt{pair\_noise.py}
+\item Pressure: \texttt{goodhart\_pressure.py}
+\item Causal clamps: \texttt{intervention\_test.py}
+\item Runtime dial: \texttt{dial\_input\_experiment.py}
+\item Composition: \texttt{composition\_experiment.py}
+\item Post-hoc retrofit: \texttt{posthoc\_state\_experiment.py}
+\item Coverage-scheme control: \texttt{b\_coverage\_schemes.py}
+\item Fusion ablation: \texttt{dial\_fusion\_ablation.py}
+\item LM bridge: \texttt{lm\_state\_tokens\_experiment.py}
+\item LM post-hoc conditions: \texttt{lm\_posthoc\_experiment.py}
+\item LM instruction condition: \texttt{lm\_instruction\_experiment.py}
+\end{itemize}
+Every number in this paper is generated by the corresponding summarizer script
+(\texttt{summarize\_*.py}, \texttt{significance\_hard.py}) from the committed result files.
+
+\section{Per-Seed Reference Tables}
+\label{app:perseeds}
+
+Tables~\ref{tab:hard-perseed} and~\ref{tab:taxonomy} collect per-seed reference values
+underlying the main results; the per-seed pressure deltas (all conditions, including the dense
+controls) are visible in the repository's goodhart result files
+(\texttt{goodhart\_results.jsonl}, \texttt{goodhart\_ball\_results.jsonl}) and summarized
+in Figure~\ref{fig:pressure}.
+
+\begin{table}[t]
+\centering
+\caption{Per-training-seed tempted-harm (\%) in the hard world, seeds 42--51 (main world).}
+\label{tab:hard-perseed}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l c c c c c c c c c c}
+\toprule
+Seed & 42 & 43 & 44 & 45 & 46 & 47 & 48 & 49 & 50 & 51 \\
+\midrule
+A & 89.7 & 90.3 & 89.4 & 90.9 & 90.8 & 92.7 & 89.6 & 88.8 & 90.8 & 91.6 \\
+B & 2.2 & 2.3 & 2.6 & 1.9 & 0.7 & 2.9 & 2.2 & 4.8 & 4.0 & 0.6 \\
+B$_{\mathrm{all}}$ & 38.8 & 40.5 & 41.5 & 37.5 & 35.7 & 40.9 & 38.5 & 43.2 & 46.0 & 40.3 \\
+D & 35.8 & 37.5 & 36.9 & 36.5 & 34.2 & 37.0 & 37.9 & 41.1 & 43.4 & 38.7 \\
+C & 36.6 & 35.0 & 33.6 & 33.5 & 32.6 & 33.5 & 34.9 & 37.3 & 39.4 & 34.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+\section{Reproducibility Checklist for JAIR}
+
+Select the answers that apply to your research -- one per item.
+
+\subsection*{All articles:}
+
+\begin{enumerate}
+    \item All claims investigated in this work are clearly stated.
+    \textbf{yes}
+    \item Clear explanations are given how the work reported substantiates the claims.
+    \textbf{yes}
+    \item Limitations or technical assumptions are stated clearly and explicitly.
+    \textbf{yes}
+    \item Conceptual outlines and/or pseudo-code descriptions of the AI methods introduced in this work are provided, and important implementation details are discussed.
+    \textbf{yes}
+    \item Motivation is provided for all design choices, including algorithms, implementation choices, parameters, data sets and experimental protocols beyond metrics.
+    \textbf{yes}
+\end{enumerate}
+
+\subsection*{Articles containing theoretical contributions:}
+Does this paper make theoretical contributions?
+\textbf{no}
+
+\begin{enumerate}
+    \item All assumptions and restrictions are stated clearly and formally.
+    \textbf{NA}
+    \item All novel claims are stated formally (e.g., in theorem statements).
+    \textbf{NA}
+    \item Proofs of all non-trivial claims are provided in sufficient detail to permit verification by readers with a reasonable degree of expertise (e.g., that expected from a PhD candidate in the same area of AI). \textbf{NA}
+    \item
+    Complex formalism, such as definitions or proofs, is motivated and explained clearly.
+    \textbf{NA}
+    \item
+    The use of mathematical notation and formalism serves the purpose of enhancing clarity and precision; gratuitous use of mathematical formalism (i.e., use that does not enhance clarity or precision) is avoided.
+    \textbf{NA}
+    \item
+    Appropriate citations are given for all non-trivial theoretical tools and techniques.
+    \textbf{NA}
+\end{enumerate}
+
+\subsection*{Articles reporting on computational experiments:}
+Does this paper include computational experiments? \textbf{yes}
+
+If yes, please complete the list below.
+
+\begin{enumerate}
+    \item
+    All source code required for conducting experiments is included in an online appendix
+    or will be made publicly available upon publication of the paper.
+    The online appendix follows best practices for source code readability and documentation as well as for long-term accessibility.
+    \textbf{yes}
+    \item The source code comes with a license that
+    allows free usage for reproducibility purposes.
+    \textbf{yes}
+    \item The source code comes with a license that
+    allows free usage for research purposes in general.
+    \textbf{yes}
+    \item
+    Raw, unaggregated data from all experiments is included in an online appendix
+    or will be made publicly available upon publication of the paper.
+    The online appendix follows best practices for long-term accessibility.
+    \textbf{yes}
+    \item The unaggregated data comes with a license that
+    allows free usage for reproducibility purposes.
+    \textbf{yes}
+    \item The unaggregated data comes with a license that
+    allows free usage for research purposes in general.
+    \textbf{yes}
+    \item If an algorithm depends on randomness, then the method used for generating random numbers and for setting seeds is described in a way sufficient to allow replication of results.
+    \textbf{yes}
+    \item The execution environment for experiments, the computing infrastructure (hardware and software) used for running them, is described, including GPU/CPU makes and models; amount of memory (cache and RAM); make and version of operating system; names and versions of relevant software libraries and frameworks.
+    \textbf{yes}
+    \item
+    The evaluation metrics used in experiments are clearly explained and their choice is explicitly motivated.
+    \textbf{yes}
+    \item
+    The number of algorithm runs used to compute each result is reported.
+    \textbf{yes}
+    \item
+    Reported results have not been ``cherry-picked'' by silently ignoring unsuccessful or unsatisfactory experiments.
+    \textbf{yes}
+    \item
+    Analysis of results goes beyond single-dimensional summaries of performance (e.g., average, median) to include measures of variation, confidence, or other distributional information.
+    \textbf{yes}
+    \item
+    All (hyper-) parameter settings for
+    the algorithms/methods used in experiments have been reported, along with the rationale or method for determining them.
+    \textbf{yes}
+    \item
+    The number and range of (hyper-) parameter settings explored prior to conducting final experiments have been indicated, along with the effort spent on (hyper-) parameter optimisation.
+    \textbf{partially}
+    \item
+    Appropriately chosen statistical hypothesis tests are used to establish statistical significance
+    in the presence of noise effects.
+    \textbf{yes}
+\end{enumerate}
+
+\subsection*{Articles using data sets:}
+Does this work rely on one or more data sets (possibly obtained from a benchmark generator or similar software artifact)?
+\textbf{yes}
+
+If yes, please complete the list below.
+\begin{enumerate}
+    \item
+    All newly introduced data sets
+    are included in an online appendix
+    or will be made publicly available upon publication of the paper.
+    The online appendix follows best practices for long-term accessibility with a license
+    that allows free usage for research purposes.
+    \textbf{yes}
+    \item The newly introduced data set comes with a license that
+    allows free usage for reproducibility purposes.
+    \textbf{yes}
+    \item The newly introduced data set comes with a license that
+    allows free usage for research purposes in general.
+    \textbf{yes}
+    \item All data sets drawn from the literature or other public sources (potentially including authors' own previously published work) are accompanied by appropriate citations.
+    \textbf{NA}
+    \item All data sets drawn from the existing literature (potentially including authors' own previously published work) are publicly available. \textbf{NA}
+    \item All new data sets and data sets that are not publicly available are described in detail, including relevant statistics, the data collection process and annotation process if relevant.
+    \textbf{yes}
+    \item
+    All methods used for preprocessing, augmenting, batching or splitting data sets (e.g., in the context of hold-out or cross-validation)
+    are described in detail. \textbf{yes}
+\end{enumerate}
+
+\subsection*{Explanations on any of the answers above (optional):}
+
+The article contains one informal theoretical argument (the late-fusion
+impossibility argument in the Design Lessons section); it is not stated or
+proved as a formal theorem, so the theoretical-contribution section is answered
+``no''. All data sets are generated by the seeded environment generators that
+ship with the source code, and all raw per-run results (JSONL) are committed to
+the repository. Hyperparameters for every condition are reported in the
+appendix; the exploration effort behind them is described only partially
+(hyperparameters were fixed early in pilot runs rather than swept
+systematically), hence ``partially'' for that item.
+
+\end{document}
